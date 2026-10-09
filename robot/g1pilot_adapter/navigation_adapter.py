@@ -1,69 +1,114 @@
+from __future__ import annotations
+
+import math
+
 from modules.navigation.models import NavigationGoal
+from robot.g1pilot_adapter.navigation_bridge import (
+    MockMotionAdapter,
+    NavigationBridge,
+    VelocityCommand,
+)
 
 
 class G1PilotNavigationAdapter:
     """
-    Adapter between the thesis NavigationModule and G1Pilot.
+    Navigation adapter for the HFU G1 Service Platform.
 
-    Modes:
-        mock:
-            Development without a physical robot.
+    MOCK:
+        Simulates navigation goals and velocity commands.
 
-        real:
-            Reserved for communication with the real G1Pilot ROS 2 system.
-
-    Physical robot motion is intentionally disabled until the
-    G1Pilot locomotion startup procedure has been validated.
+    REAL:
+        Reserved for G1Pilot ROS 2 integration.
+        Physical navigation remains locked.
     """
 
-    def __init__(self, mode: str = "mock"):
+    def __init__(self, mode: str = "mock") -> None:
         if mode not in ("mock", "real"):
             raise ValueError("mode must be 'mock' or 'real'")
 
         self.mode = mode
         self.connected = False
+        self.active_goal: NavigationGoal | None = None
+
+        self.mock_motion = MockMotionAdapter()
+        self.bridge = NavigationBridge(self.mock_motion)
 
     def connect(self) -> None:
-        """Initialize the adapter."""
-
-        if self.mode == "mock":
-            print("[G1PilotAdapter] Connected in MOCK mode.")
-            self.connected = True
+        if self.connected:
             return
 
-        # Real ROS 2 / G1Pilot connection will be implemented here.
-        print("[G1PilotAdapter] REAL mode selected.")
-        print("[G1PilotAdapter] Physical motion is currently locked.")
+        if self.mode == "real":
+            print("[G1PilotAdapter] REAL navigation remains locked.")
+        else:
+            print("[G1PilotAdapter] Connected in MOCK mode.")
+
         self.connected = True
 
     def send_goal(self, goal: NavigationGoal) -> None:
-        """Send a navigation goal."""
-
         if not self.connected:
-            raise RuntimeError("G1Pilot adapter is not connected.")
+            raise RuntimeError("Navigation adapter not connected.")
 
+        if self.mode != "mock":
+            raise RuntimeError("Real navigation is locked.")
+
+        if self.active_goal is not None:
+            raise RuntimeError("Navigation goal already active.")
+
+        if not isinstance(goal.name, str) or not goal.name.strip():
+            raise ValueError("Goal name cannot be empty.")
+
+        if not all(
+            math.isfinite(value)
+            for value in (goal.x, goal.y, goal.yaw)
+        ):
+            raise ValueError("Goal coordinates must be finite.")
+
+        self.active_goal = goal
+        self.bridge.enable()
+
+        print(
+            f"[NAV MOCK] Goal accepted: {goal.name} "
+            f"x={goal.x}, y={goal.y}, yaw={goal.yaw}"
+        )
+
+    def send_mock_velocity(
+        self,
+        command: VelocityCommand,
+        created_at: float,
+    ) -> VelocityCommand:
+        """
+        Forward a simulated controller velocity.
+
+        This does not convert destination coordinates to velocity.
+        """
+        if self.mode != "mock":
+            raise RuntimeError("Mock velocity unavailable in real mode.")
+
+        if self.active_goal is None:
+            raise RuntimeError("No active navigation goal.")
+
+        return self.bridge.send_velocity(command, created_at)
+
+    def complete_goal(self) -> None:
+        """Simulate a confirmed goal arrival."""
+        if self.mode != "mock":
+            raise RuntimeError("Real goal completion is not implemented.")
+
+        if self.active_goal is None:
+            raise RuntimeError("No active navigation goal.")
+
+        self.bridge.disable()
+        print(f"[NAV MOCK] Arrived: {self.active_goal.name}")
+        self.active_goal = None
+
+    def stop(self) -> None:
         if self.mode == "mock":
-            print(
-                f"[G1PilotAdapter] MOCK navigation: "
-                f"{goal.name} -> "
-                f"x={goal.x}, y={goal.y}, yaw={goal.yaw}"
-            )
+            self.bridge.disable()
+            self.active_goal = None
+            print("[G1PilotAdapter] MOCK navigation stopped.")
             return
 
         raise RuntimeError(
-            "Real navigation is locked until G1 locomotion "
-            "startup and safety checks are validated."
+            "Real navigation stop is not implemented. "
+            "Physical navigation must remain disabled."
         )
-
-    def stop(self) -> None:
-        """Request navigation stop."""
-
-        if not self.connected:
-            return
-
-        if self.mode == "mock":
-            print("[G1PilotAdapter] MOCK stop requested.")
-            return
-
-        # Real StopMove / G1Pilot stop integration will go here.
-        print("[G1PilotAdapter] REAL stop requested.")
