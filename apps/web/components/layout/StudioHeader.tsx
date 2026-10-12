@@ -21,6 +21,10 @@ const navigation = [
     href: "/studio/vision",
   },
   {
+    label: "LiDAR",
+    href: "/studio/lidar",
+  },
+  {
     label: "Interaction",
     href: "/studio/interaction",
   },
@@ -62,7 +66,6 @@ export default function StudioHeader() {
         bg-[#d7d8d6]
       "
     >
-
       <div
         className="
           mx-auto
@@ -74,13 +77,11 @@ export default function StudioHeader() {
           px-8
         "
       >
-
         {/* ================================================= */}
         {/* BRAND */}
         {/* ================================================= */}
 
         <div className="flex shrink-0 items-center">
-
           <Link
             href="/"
             className="flex shrink-0 items-center"
@@ -92,12 +93,9 @@ export default function StudioHeader() {
             />
           </Link>
 
-
           <div className="mx-6 h-[52px] w-px bg-[#b6bab8]" />
 
-
           <div className="flex flex-col justify-center">
-
             <Link
               href="/studio"
               className="
@@ -121,11 +119,8 @@ export default function StudioHeader() {
             >
               Engineering Platform
             </p>
-
           </div>
-
         </div>
-
 
         {/* ================================================= */}
         {/* PLATFORM NAVIGATION */}
@@ -139,7 +134,6 @@ export default function StudioHeader() {
             items-stretch
           "
         >
-
           {navigation.map((item) => {
             const active = isActive(item.href);
 
@@ -167,7 +161,6 @@ export default function StudioHeader() {
                   }
                 `}
               >
-
                 {item.label}
 
                 <span
@@ -187,13 +180,10 @@ export default function StudioHeader() {
                     }
                   `}
                 />
-
               </Link>
             );
           })}
-
         </nav>
-
 
         {/* ================================================= */}
         {/* USER */}
@@ -210,12 +200,10 @@ export default function StudioHeader() {
             pl-6
           "
         >
-
           <button
             type="button"
             className="group flex items-center gap-3"
           >
-
             <div
               className="
                 flex
@@ -239,13 +227,9 @@ export default function StudioHeader() {
             <span className="text-[10px] text-[#50595e]">
               ▼
             </span>
-
           </button>
-
         </div>
-
       </div>
-
     </header>
   );
 }
