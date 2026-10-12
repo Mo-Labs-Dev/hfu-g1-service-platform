@@ -1,4 +1,3 @@
-
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.demonstrations import router as demonstrations_router
 from app.api.executions import router as executions_router
+from app.api.interaction import router as interaction_router
 from app.api.navigation import router as navigation_router
 from app.api.workflows import router as workflows_router
 from app.api.websocket import manager, router as websocket_router
@@ -74,12 +74,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register all API routers
 app.include_router(demonstrations_router)
 app.include_router(navigation_router)
 app.include_router(websocket_router)
 app.include_router(workflows_router)
 app.include_router(executions_router)
+app.include_router(interaction_router)
 
 
 @app.get("/api/health")
