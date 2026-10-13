@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 
@@ -35,8 +36,7 @@ class G1PythonAdapter:
     def get_fsm_id(self) -> int:
         code, fsm_id = self.client.GetFsmId()
 
-        if code != 0:
-            raise RuntimeError(f"GetFsmId failed with code {code}")
+        self._check_response(code, "GetFsmId")
 
         if fsm_id is None:
             raise RuntimeError("GetFsmId returned no FSM value")
@@ -46,12 +46,31 @@ class G1PythonAdapter:
     def is_locomotion_ready(self) -> bool:
         return self.get_fsm_id() == self.FSM_LOCOMOTION
 
-    def stop(self) -> None:
-        self.client.StopMove()
+    @staticmethod
+    def _check_response(code: int, operation: str) -> None:
+        if code != 0:
+            raise RuntimeError(
+                f"{operation} failed with SDK response code {code}"
+            )
 
     @staticmethod
-    def _clamp(value: float, minimum: float, maximum: float) -> float:
-        return max(minimum, min(maximum, value))
+    def _validate_number(
+        value: float,
+        name: str,
+        maximum: float,
+    ) -> float:
+        value = float(value)
+
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+
+        if abs(value) > maximum:
+            raise ValueError(
+                f"{name}={value} exceeds permitted range "
+                f"[-{maximum}, {maximum}]"
+            )
+
+        return value
 
     def _require_locomotion_ready(self) -> None:
         fsm_id = self.get_fsm_id()
@@ -61,6 +80,23 @@ class G1PythonAdapter:
                 f"Movement blocked: expected FSM 500, got {fsm_id}"
             )
 
+    def stop(self) -> None:
+        # StopMove() in the SDK discards the response code.
+        # Call SetVelocity directly so acceptance can be checked.
+        code = self.client.SetVelocity(
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        )
+
+        self._check_response(code, "Stop velocity request")
+
+        print(
+            "[G1] Zero-velocity command accepted. "
+            "Physical stop must be verified independently."
+        )
+
     def move(
         self,
         vx: float = 0.0,
@@ -68,60 +104,111 @@ class G1PythonAdapter:
         yaw: float = 0.0,
         duration: float = 1.0,
     ) -> None:
+        vx = self._validate_number(
+            vx, "vx", self.limits.max_linear_speed
+        )
+        vy = self._validate_number(
+            vy, "vy", self.limits.max_lateral_speed
+        )
+        yaw = self._validate_number(
+            yaw, "yaw", self.limits.max_yaw_speed
+        )
+
+        duration = float(duration)
+
+        if not math.isfinite(duration):
+            raise ValueError("duration must be finite")
+
+        if not 0.1 <= duration <= self.limits.max_duration:
+            raise ValueError(
+                f"duration must be between 0.1 and "
+                f"{self.limits.max_duration} seconds"
+            )
+
         self._require_locomotion_ready()
 
-        vx = self._clamp(
-            vx,
-            -self.limits.max_linear_speed,
-            self.limits.max_linear_speed,
+        print(
+            f"[G1] Requesting velocity: "
+            f"vx={vx:.3f}, vy={vy:.3f}, "
+            f"yaw={yaw:.3f}, duration={duration:.2f}s"
         )
 
-        vy = self._clamp(
-            vy,
-            -self.limits.max_lateral_speed,
-            self.limits.max_lateral_speed,
-        )
-
-        yaw = self._clamp(
-            yaw,
-            -self.limits.max_yaw_speed,
-            self.limits.max_yaw_speed,
-        )
-
-        duration = self._clamp(
-            duration,
-            0.1,
-            self.limits.max_duration,
-        )
+        movement_error = None
 
         try:
-            self.client.SetVelocity(
-                float(vx),
-                float(vy),
-                float(yaw),
-                float(duration),
+            code = self.client.SetVelocity(
+                vx,
+                vy,
+                yaw,
+                duration,
             )
+
+            self._check_response(code, "SetVelocity")
+
+            print(
+                "[G1] Motion command accepted. "
+                "Actual displacement is not verified."
+            )
+
             time.sleep(duration)
 
-        finally:
-            self.stop()
+        except BaseException as exc:
+            movement_error = exc
+            raise
 
-    def forward(self, speed: float = 0.20, duration: float = 1.0) -> None:
+        finally:
+            try:
+                self.stop()
+            except Exception as stop_error:
+                print(
+                    "[G1] WARNING: Zero-velocity request "
+                    f"failed: {stop_error}. "
+                    "Use the approved physical safety procedure."
+                )
+
+                if movement_error is None:
+                    raise
+
+    def forward(
+        self,
+        speed: float = 0.20,
+        duration: float = 1.0,
+    ) -> None:
         self.move(vx=abs(speed), duration=duration)
 
-    def backward(self, speed: float = 0.15, duration: float = 1.0) -> None:
+    def backward(
+        self,
+        speed: float = 0.15,
+        duration: float = 1.0,
+    ) -> None:
         self.move(vx=-abs(speed), duration=duration)
 
-    def left(self, speed: float = 0.10, duration: float = 1.0) -> None:
+    def left(
+        self,
+        speed: float = 0.10,
+        duration: float = 1.0,
+    ) -> None:
         self.move(vy=abs(speed), duration=duration)
 
-    def right(self, speed: float = 0.10, duration: float = 1.0) -> None:
+    def right(
+        self,
+        speed: float = 0.10,
+        duration: float = 1.0,
+    ) -> None:
         self.move(vy=-abs(speed), duration=duration)
 
-    def turn_left(self, speed: float = 0.20, duration: float = 1.0) -> None:
+    def turn_left(
+        self,
+        speed: float = 0.20,
+        duration: float = 1.0,
+    ) -> None:
         self.move(yaw=abs(speed), duration=duration)
 
-    def turn_right(self, speed: float = 0.20, duration: float = 1.0) -> None:
+    def turn_right(
+        self,
+        speed: float = 0.20,
+        duration: float = 1.0,
+    ) -> None:
         self.move(yaw=-abs(speed), duration=duration)
 
 
@@ -130,3 +217,4 @@ if __name__ == "__main__":
 
     print("Current FSM:", robot.get_fsm_id())
     print("Locomotion ready:", robot.is_locomotion_ready())
+    print("No movement command issued.")

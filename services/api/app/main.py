@@ -7,6 +7,7 @@ from app.api.demonstrations import router as demonstrations_router
 from app.api.executions import router as executions_router
 from app.api.interaction import router as interaction_router
 from app.api.navigation import router as navigation_router
+from app.api.physical_robot import router as physical_robot_router
 from app.api.workflows import router as workflows_router
 from app.api.websocket import manager, router as websocket_router
 
@@ -36,7 +37,9 @@ async def lifespan(app: FastAPI):
         event_handler=handle_task_event,
     )
 
-    demonstration_service = DemonstrationService(task_engine)
+    demonstration_service = DemonstrationService(
+        task_engine
+    )
 
     app.state.robot = robot
     app.state.task_engine = task_engine
@@ -80,6 +83,7 @@ app.include_router(websocket_router)
 app.include_router(workflows_router)
 app.include_router(executions_router)
 app.include_router(interaction_router)
+app.include_router(physical_robot_router)
 
 
 @app.get("/api/health")
