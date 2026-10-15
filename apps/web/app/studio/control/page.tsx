@@ -1,12 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+
 import {
   Activity,
   AlertTriangle,
   ArrowDown,
   ArrowUp,
   Bot,
+  Camera,
   CheckCircle2,
   Clock3,
   Download,
@@ -23,9 +31,14 @@ import {
   Square,
 } from "lucide-react";
 
+import LidarPreview from "@/components/robot/LidarPreview";
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   "http://127.0.0.1:8000";
+
+const CAMERA_URL =
+  process.env.NEXT_PUBLIC_G1_CAMERA_URL || "";
 
 const STATUS_INTERVAL_MS = 3000;
 const MAX_STATUS_AGE_MS = 15000;
@@ -36,9 +49,25 @@ type PhysicalStatus = {
   fsm_id: number | null;
   locomotion_mode: boolean;
   motion_enabled: boolean;
+  posture_control_available: boolean;
+  locomotion_control_available: boolean;
   timestamp: string | null;
   error: string | null;
 };
+
+type ControlCapabilities = {
+  posture_control_available: boolean;
+  locomotion_control_available: boolean;
+  supported_actions: string[];
+  required_sequence: number[];
+  physical_motion_enabled: boolean;
+  message: string;
+};
+
+type PhysicalControlAction =
+  | "damp"
+  | "stand_up"
+  | "start_locomotion";
 
 type MotionCommand =
   | "FORWARD"
@@ -64,14 +93,6 @@ type Snapshot = {
   recorded_at: string;
 };
 
-type MotionButtonProps = {
-  label: string;
-  command: MotionCommand;
-  icon: React.ReactNode;
-  onCommand: (command: MotionCommand) => void;
-  stop?: boolean;
-};
-
 const FSM_NAMES: Record<number, string> = {
   0: "Initial / Idle",
   1: "Damp Mode",
@@ -84,26 +105,38 @@ const MODES = [
   {
     id: 1,
     name: "Damp Mode",
-    description: "Joint damping mode",
+    description: "Joint damping",
     icon: Power,
+    action: "damp" as PhysicalControlAction,
+    sourceFsm: 0,
+    targetFsm: 1,
   },
   {
     id: 4,
     name: "Stand Mode",
     description: "Standing posture",
     icon: Bot,
+    action: "stand_up" as PhysicalControlAction,
+    sourceFsm: 1,
+    targetFsm: 4,
   },
   {
     id: 500,
-    name: "Locomotion Mode",
+    name: "Locomotion",
     description: "Walking controller",
     icon: Footprints,
+    action: "start_locomotion" as PhysicalControlAction,
+    sourceFsm: 4,
+    targetFsm: 500,
   },
   {
     id: 3,
     name: "Sit Mode",
     description: "Sitting posture",
     icon: ArrowDown,
+    action: null,
+    sourceFsm: null,
+    targetFsm: 3,
   },
 ];
 
@@ -115,21 +148,41 @@ function getFsmName(value: number | null): string {
   return FSM_NAMES[value] ?? `FSM ${value}`;
 }
 
+function Panel({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section
+      className={`rounded-xl border border-[#d8dcda] bg-white p-5 ${className}`}
+    >
+      {children}
+    </section>
+  );
+}
+
 function MotionButton({
   label,
-  command,
   icon,
-  onCommand,
+  onClick,
   stop = false,
-}: MotionButtonProps) {
+}: {
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+  stop?: boolean;
+}) {
   return (
     <button
       type="button"
-      onClick={() => onCommand(command)}
-      className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl border px-3 py-3 text-sm font-semibold transition active:scale-[0.98] ${
+      onClick={onClick}
+      className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold transition active:scale-[0.98] ${
         stop
           ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
-          : "border-[#d8dfda] bg-white text-[#34413b] hover:border-[#00866a] hover:bg-[#eef7f3]"
+          : "border-[#d8dfda] bg-white text-[#34413b] hover:bg-[#eef7f3]"
       }`}
     >
       {icon}
@@ -138,42 +191,138 @@ function MotionButton({
   );
 }
 
+function CameraPreview() {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const online =
+    CAMERA_URL.length > 0 &&
+    loaded &&
+    !failed;
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-[#d8dcda] bg-white">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <div>
+          <h3 className="font-semibold">
+            G1 Camera
+          </h3>
+
+          <p className="text-xs text-[#738080]">
+            Robot Vision · Live Preview
+          </p>
+        </div>
+
+        <span
+          className={`rounded-full px-2 py-1 text-xs font-semibold ${
+            online
+              ? "bg-emerald-50 text-emerald-700"
+              : "bg-amber-50 text-amber-700"
+          }`}
+        >
+          {online
+            ? "Streaming"
+            : "Offline"}
+        </span>
+      </div>
+
+      <div className="relative flex h-[230px] items-center justify-center overflow-hidden bg-[#101c27]">
+        {CAMERA_URL && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={CAMERA_URL}
+            alt="G1 camera feed"
+            className="absolute inset-0 h-full w-full object-contain"
+            onLoad={() => {
+              setLoaded(true);
+              setFailed(false);
+            }}
+            onError={() => {
+              setLoaded(false);
+              setFailed(true);
+            }}
+          />
+        )}
+
+        {!online && (
+          <div className="pointer-events-none relative z-10 flex flex-col items-center gap-3 bg-[#101c27]/90 px-6 py-4 text-center">
+            <Camera className="h-9 w-9 text-[#96a9b5]" />
+
+            <span className="text-sm font-medium text-white">
+              Camera Feed Unavailable
+            </span>
+
+            <p className="max-w-xs text-xs text-[#aebdc6]">
+              {CAMERA_URL
+                ? "Unable to load the configured camera stream."
+                : "Waiting for a real G1 camera stream configuration."}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="px-4 py-3">
+        <p className="text-xs text-[#738080]">
+          {online
+            ? "Camera media received"
+            : "No verified G1 camera feed"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function RobotControlPage() {
-  const [status, setStatus] = useState<PhysicalStatus | null>(
-    null
-  );
+  const [status, setStatus] =
+    useState<PhysicalStatus | null>(null);
 
-  const [statusError, setStatusError] = useState<string | null>(
-    null
-  );
+  const [statusError, setStatusError] =
+    useState<string | null>(null);
 
-  const [lastUpdate, setLastUpdate] = useState<string | null>(
-    null
-  );
+  const [capabilities, setCapabilities] =
+    useState<ControlCapabilities | null>(null);
 
-  const [refreshing, setRefreshing] = useState(false);
+  const [capabilityError, setCapabilityError] =
+    useState<string | null>(null);
 
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [refreshing, setRefreshing] =
+    useState(false);
 
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [controlBusy, setControlBusy] =
+    useState<PhysicalControlAction | null>(
+      null
+    );
 
-  const [lastCommand, setLastCommand] = useState("None");
+  const [logs, setLogs] =
+    useState<LogEntry[]>([]);
 
-  const [simulatedSteps, setSimulatedSteps] = useState(0);
+  const [snapshots, setSnapshots] =
+    useState<Snapshot[]>([]);
 
-  const [simulatedHeading, setSimulatedHeading] = useState(0);
+  const [lastCommand, setLastCommand] =
+    useState("None");
 
-  const requestInProgress = useRef(false);
+  const [simulatedSteps, setSimulatedSteps] =
+    useState(0);
+
+  const [simulatedHeading, setSimulatedHeading] =
+    useState(0);
+
   const mounted = useRef(true);
+  const busy = useRef(false);
   const nextId = useRef(1);
 
   const addLog = useCallback(
-    (action: string, result: string) => {
+    (
+      action: string,
+      result: string
+    ) => {
       const entry: LogEntry = {
         id: nextId.current++,
         action,
         result,
-        timestamp: new Date().toISOString(),
+        timestamp:
+          new Date().toISOString(),
       };
 
       setLogs((previous) =>
@@ -183,144 +332,370 @@ export default function RobotControlPage() {
     []
   );
 
-  const refreshStatus = useCallback(async () => {
-    if (requestInProgress.current) {
-      return;
-    }
+  const refreshStatus =
+    useCallback(async () => {
+      if (busy.current) {
+        return;
+      }
 
-    requestInProgress.current = true;
-    setRefreshing(true);
+      busy.current = true;
+      setRefreshing(true);
 
-    try {
-      const response = await fetch(
-        `${API_URL}/api/physical-robot/status`,
-        {
-          cache: "no-store",
-          signal: AbortSignal.timeout(6000),
+      try {
+        const response = await fetch(
+          `${API_URL}/api/physical-robot/status`,
+          {
+            cache: "no-store",
+            signal:
+              AbortSignal.timeout(6000),
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(
+            `Status HTTP ${response.status}`
+          );
         }
-      );
 
-      if (!response.ok) {
-        throw new Error(
-          `Robot status request failed (${response.status})`
+        const result: PhysicalStatus =
+          await response.json();
+
+        if (!mounted.current) {
+          return;
+        }
+
+        setStatus(result);
+
+        if (
+          !result.connected ||
+          result.source !==
+            "physical_g1" ||
+          result.fsm_id === null
+        ) {
+          setStatusError(
+            result.error ||
+              "Physical robot unavailable"
+          );
+
+          return;
+        }
+
+        const timestamp =
+          result.timestamp
+            ? new Date(
+                result.timestamp
+              ).getTime()
+            : NaN;
+
+        const age = Math.abs(
+          Date.now() - timestamp
         );
+
+        if (
+          !Number.isFinite(timestamp) ||
+          age > MAX_STATUS_AGE_MS
+        ) {
+          setStatusError(
+            "Robot feedback is stale"
+          );
+
+          return;
+        }
+
+        setStatusError(null);
+      } catch (error) {
+        if (mounted.current) {
+          setStatus(null);
+
+          setStatusError(
+            error instanceof Error
+              ? error.message
+              : "Robot status API unavailable"
+          );
+        }
+      } finally {
+        busy.current = false;
+
+        if (mounted.current) {
+          setRefreshing(false);
+        }
       }
+    }, []);
 
-      const result: PhysicalStatus =
-        await response.json();
-
-      if (!mounted.current) {
-        return;
-      }
-
-      setStatus(result);
-
-      if (
-        !result.connected ||
-        result.source !== "physical_g1" ||
-        result.fsm_id === null
-      ) {
-        setStatusError(
-          result.error || "Physical robot unavailable"
+  const refreshCapabilities =
+    useCallback(async () => {
+      try {
+        const response = await fetch(
+          `${API_URL}/api/physical-robot/control-capabilities`,
+          {
+            cache: "no-store",
+            signal:
+              AbortSignal.timeout(5000),
+          }
         );
-        setLastUpdate(null);
-        return;
+
+        if (!response.ok) {
+          throw new Error(
+            `Capabilities HTTP ${response.status}`
+          );
+        }
+
+        const result: ControlCapabilities =
+          await response.json();
+
+        if (!mounted.current) {
+          return;
+        }
+
+        setCapabilities(result);
+        setCapabilityError(null);
+      } catch (error) {
+        if (mounted.current) {
+          setCapabilities(null);
+
+          setCapabilityError(
+            error instanceof Error
+              ? error.message
+              : "Control capability request failed"
+          );
+        }
       }
-
-      const timestamp = result.timestamp
-        ? new Date(result.timestamp)
-        : null;
-
-      if (
-        !timestamp ||
-        !Number.isFinite(timestamp.getTime()) ||
-        Math.abs(Date.now() - timestamp.getTime()) >
-          MAX_STATUS_AGE_MS
-      ) {
-        setStatusError("Robot feedback is stale");
-        setLastUpdate(null);
-        return;
-      }
-
-      setStatusError(null);
-      setLastUpdate(timestamp.toLocaleTimeString());
-    } catch (error) {
-      if (mounted.current) {
-        setStatus(null);
-        setLastUpdate(null);
-
-        setStatusError(
-          error instanceof Error
-            ? error.message
-            : "Unable to contact robot status API"
-        );
-      }
-    } finally {
-      requestInProgress.current = false;
-
-      if (mounted.current) {
-        setRefreshing(false);
-      }
-    }
-  }, []);
+    }, []);
 
   useEffect(() => {
     mounted.current = true;
 
     void refreshStatus();
+    void refreshCapabilities();
 
-    const interval = window.setInterval(() => {
-      void refreshStatus();
-    }, STATUS_INTERVAL_MS);
+    const statusTimer =
+      window.setInterval(() => {
+        void refreshStatus();
+      }, STATUS_INTERVAL_MS);
+
+    const capabilityTimer =
+      window.setInterval(() => {
+        void refreshCapabilities();
+      }, 5000);
 
     return () => {
       mounted.current = false;
-      window.clearInterval(interval);
+
+      window.clearInterval(
+        statusTimer
+      );
+
+      window.clearInterval(
+        capabilityTimer
+      );
     };
-  }, [refreshStatus]);
-
-  const timestampMs = status?.timestamp
-    ? new Date(status.timestamp).getTime()
-    : NaN;
-
-  const freshTimestamp =
-    Number.isFinite(timestampMs) &&
-    Math.abs(Date.now() - timestampMs) <=
-      MAX_STATUS_AGE_MS;
+  }, [
+    refreshStatus,
+    refreshCapabilities,
+  ]);
 
   const live =
     status?.connected === true &&
     status.source === "physical_g1" &&
     status.fsm_id !== null &&
-    freshTimestamp &&
     statusError === null;
 
-  const currentFsm = live
-    ? status?.fsm_id ?? null
-    : null;
+  const currentFsm =
+    live ? status!.fsm_id : null;
 
-  function simulateMovement(command: MotionCommand) {
+  const postureControlAvailable =
+    capabilities?.posture_control_available ===
+    true;
+
+  const locomotionControlAvailable =
+    capabilities?.locomotion_control_available ===
+    true;
+
+  const locomotionReady =
+    live &&
+    currentFsm === 4 &&
+    locomotionControlAvailable &&
+    controlBusy === null;
+
+  async function requestPhysicalControl(
+    action: PhysicalControlAction
+  ) {
+    if (controlBusy !== null) {
+      return;
+    }
+
+    if (!live) {
+      addLog(
+        action.toUpperCase(),
+        "Blocked: physical G1 is not online."
+      );
+
+      return;
+    }
+
+    const isLocomotion =
+      action === "start_locomotion";
+
+    const controlAvailable =
+      isLocomotion
+        ? locomotionControlAvailable
+        : postureControlAvailable;
+
+    if (!controlAvailable) {
+      addLog(
+        action.toUpperCase(),
+        isLocomotion
+          ? "Blocked: locomotion control is not armed."
+          : "Blocked: physical posture control is not armed."
+      );
+
+      return;
+    }
+
+    const expectedSource =
+      action === "damp"
+        ? 0
+        : action === "stand_up"
+        ? 1
+        : 4;
+
+    const targetFsm =
+      action === "damp"
+        ? 1
+        : action === "stand_up"
+        ? 4
+        : 500;
+
+    if (currentFsm !== expectedSource) {
+      addLog(
+        action.toUpperCase(),
+        `Blocked: expected FSM ${expectedSource}, current FSM is ${currentFsm}.`
+      );
+
+      return;
+    }
+
+    const actionName =
+      action === "damp"
+        ? "Damp Mode"
+        : action === "stand_up"
+        ? "Stand Up"
+        : "Start Locomotion";
+
+    const confirmed =
+      window.confirm(
+        [
+          `Send "${actionName}" to the physical Unitree G1?`,
+          "",
+          `FSM ${expectedSource} → FSM ${targetFsm}`,
+          "",
+          isLocomotion
+            ? "The robot will enter locomotion mode. Do not send walking commands until the robot is confirmed stable and ready."
+            : "Make sure the robot and its surroundings are safe.",
+        ].join("\n")
+      );
+
+    if (!confirmed) {
+      addLog(
+        actionName.toUpperCase(),
+        "Cancelled by operator."
+      );
+
+      return;
+    }
+
+    setControlBusy(action);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/physical-robot/posture`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            action,
+            confirmed: true,
+          }),
+          cache: "no-store",
+          signal:
+            AbortSignal.timeout(15000),
+        }
+      );
+
+      const body =
+        await response
+          .json()
+          .catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          body?.detail ||
+            body?.error ||
+            `Physical control request failed (${response.status})`
+        );
+      }
+
+      const afterFsm =
+        body?.after_fsm;
+
+      addLog(
+        actionName.toUpperCase(),
+        afterFsm !== undefined
+          ? `FSM transition confirmed: ${expectedSource} → ${afterFsm}.`
+          : `${actionName} command accepted by physical robot backend.`
+      );
+
+      await refreshStatus();
+      await refreshCapabilities();
+    } catch (error) {
+      addLog(
+        actionName.toUpperCase(),
+        error instanceof Error
+          ? error.message
+          : "Physical control command failed."
+      );
+    } finally {
+      if (mounted.current) {
+        setControlBusy(null);
+      }
+    }
+  }
+
+  function simulateMovement(
+    command: MotionCommand
+  ) {
     setLastCommand(command);
 
     if (command === "FORWARD") {
-      setSimulatedSteps((previous) => previous + 1);
+      setSimulatedSteps(
+        (value) => value + 1
+      );
     }
 
     if (command === "BACKWARD") {
-      setSimulatedSteps((previous) => previous - 1);
+      setSimulatedSteps(
+        (value) => value - 1
+      );
     }
 
     if (command === "TURN_LEFT") {
-      setSimulatedHeading((previous) => previous - 15);
+      setSimulatedHeading(
+        (value) => value - 15
+      );
     }
 
     if (command === "TURN_RIGHT") {
-      setSimulatedHeading((previous) => previous + 15);
+      setSimulatedHeading(
+        (value) => value + 15
+      );
     }
 
     addLog(
       command,
-      "Simulated only. No physical robot command issued."
+      "Simulation only. No physical command sent."
     );
   }
 
@@ -333,16 +708,19 @@ export default function RobotControlPage() {
       return;
     }
 
-    const now = new Date();
-
     const snapshot: Snapshot = {
       id: nextId.current++,
-      name: `Robot State ${snapshots.length + 1}`,
+      name: `Robot State ${
+        snapshots.length + 1
+      }`,
       fsm_id: currentFsm,
-      fsm_name: getFsmName(currentFsm),
+      fsm_name:
+        getFsmName(currentFsm),
       source: "physical_g1",
-      robot_timestamp: status.timestamp,
-      recorded_at: now.toISOString(),
+      robot_timestamp:
+        status.timestamp,
+      recorded_at:
+        new Date().toISOString(),
     };
 
     setSnapshots((previous) => [
@@ -352,7 +730,7 @@ export default function RobotControlPage() {
 
     addLog(
       "RECORD STATE",
-      `Recorded physical FSM ${currentFsm}`
+      `Recorded FSM ${currentFsm}`
     );
   }
 
@@ -362,28 +740,44 @@ export default function RobotControlPage() {
     }
 
     const data = {
-      format: "g1-robot-state-recording",
+      format:
+        "g1-robot-state-recording",
       version: 1,
       note:
-        "FSM and timestamps only. No measured XYZ coordinates, orientation, or joint positions are included.",
+        "FSM and timestamps only. No measured XYZ coordinates, orientation, or joint positions.",
       snapshots,
     };
 
     const blob = new Blob(
-      [JSON.stringify(data, null, 2)],
+      [
+        JSON.stringify(
+          data,
+          null,
+          2
+        ),
+      ],
       {
         type: "application/json",
       }
     );
 
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
+    const url =
+      URL.createObjectURL(blob);
+
+    const anchor =
+      document.createElement("a");
 
     anchor.href = url;
-    anchor.download = `g1-robot-state-${Date.now()}.json`;
 
-    document.body.appendChild(anchor);
+    anchor.download =
+      `g1-robot-state-${Date.now()}.json`;
+
+    document.body.appendChild(
+      anchor
+    );
+
     anchor.click();
+
     anchor.remove();
 
     window.setTimeout(() => {
@@ -394,6 +788,7 @@ export default function RobotControlPage() {
   return (
     <main className="min-h-screen bg-[#f5f6f5] px-6 py-8 text-[#292f33] lg:px-8">
       <div className="mx-auto max-w-6xl space-y-6">
+
         <header>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#7b8687]">
             G1 Studio / Robot Operations
@@ -404,61 +799,81 @@ export default function RobotControlPage() {
           </h1>
 
           <p className="mt-2 text-sm text-[#657078]">
-            Live physical robot monitoring, operating modes,
-            simulated walking and robot-state recording.
+            Live robot monitoring, perception,
+            physical posture control,
+            guarded locomotion,
+            simulation and state recording.
           </p>
         </header>
 
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#d8dcda] bg-white p-5">
-          <div className="flex items-center gap-3">
-            <Radio
-              className={`h-6 w-6 ${
-                live
-                  ? "text-[#00866a]"
-                  : "text-amber-600"
-              }`}
-            />
+        <Panel>
+          <div className="flex flex-wrap items-center justify-between gap-4">
 
-            <div>
-              <p className="font-semibold">
-                Physical G1 Connection
-              </p>
+            <div className="flex items-center gap-3">
 
-              <p className="mt-1 text-sm text-[#738080]">
-                {live
-                  ? `Live Unitree SDK status · Updated ${lastUpdate}`
-                  : statusError ||
-                    "Waiting for physical robot status"}
-              </p>
+              <Radio
+                className={`h-6 w-6 ${
+                  live
+                    ? "text-[#00866a]"
+                    : "text-amber-600"
+                }`}
+              />
+
+              <div>
+                <p className="font-semibold">
+                  Physical G1 Connection
+                </p>
+
+                <p className="mt-1 text-sm text-[#738080]">
+                  {live
+                    ? `Live Unitree SDK status · ${
+                        status?.timestamp
+                          ? new Date(
+                              status.timestamp
+                            ).toLocaleTimeString()
+                          : "Updated"
+                      }`
+                    : statusError ||
+                      "Waiting for physical G1 feedback"}
+                </p>
+              </div>
             </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={() => void refreshStatus()}
-            disabled={refreshing}
-            className="flex items-center gap-2 rounded-lg border border-[#d8dcda] px-4 py-2 text-sm font-semibold hover:bg-[#f5f7f6] disabled:opacity-50"
-          >
-            <RefreshCw
-              className={`h-4 w-4 ${
-                refreshing ? "animate-spin" : ""
-              }`}
-            />
-            Refresh Status
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => {
+                void refreshStatus();
+                void refreshCapabilities();
+              }}
+              disabled={refreshing}
+              className="flex items-center gap-2 rounded-lg border border-[#d8dcda] px-4 py-2 text-sm font-semibold hover:bg-[#f5f7f6] disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${
+                  refreshing
+                    ? "animate-spin"
+                    : ""
+                }`}
+              />
+
+              Refresh Status
+            </button>
+
+          </div>
+        </Panel>
 
         <div className="grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-[#d8dcda] bg-white p-5">
-            <div className="flex items-center gap-2 text-[#738080]">
+
+          <Panel>
+            <div className="flex items-center gap-2 text-sm text-[#738080]">
               <Bot className="h-5 w-5" />
-              <span className="text-sm">
-                Robot Connection
-              </span>
+              Robot Connection
             </div>
 
             <p className="mt-3 text-xl font-bold">
-              {live ? "Connected" : "Unavailable"}
+              {live
+                ? "Connected"
+                : "Unavailable"}
             </p>
 
             <p className="mt-1 text-xs text-[#738080]">
@@ -466,14 +881,12 @@ export default function RobotControlPage() {
                 ? "Physical Unitree G1"
                 : "No fresh physical feedback"}
             </p>
-          </div>
+          </Panel>
 
-          <div className="rounded-xl border border-[#d8dcda] bg-white p-5">
-            <div className="flex items-center gap-2 text-[#738080]">
+          <Panel>
+            <div className="flex items-center gap-2 text-sm text-[#738080]">
               <Activity className="h-5 w-5" />
-              <span className="text-sm">
-                Current FSM
-              </span>
+              Current FSM
             </div>
 
             <p className="mt-3 text-2xl font-bold">
@@ -483,48 +896,168 @@ export default function RobotControlPage() {
             <p className="mt-1 text-xs text-[#738080]">
               {getFsmName(currentFsm)}
             </p>
-          </div>
+          </Panel>
 
-          <div className="rounded-xl border border-[#d8dcda] bg-white p-5">
-            <div className="flex items-center gap-2 text-[#738080]">
+          <Panel>
+            <div className="flex items-center gap-2 text-sm text-[#738080]">
               <ShieldCheck className="h-5 w-5" />
-              <span className="text-sm">
-                Physical Motion Access
+
+              <span>
+                Physical Control
               </span>
             </div>
 
-            <p className="mt-3 text-xl font-bold text-amber-700">
-              Locked
-            </p>
+            <div className="mt-3 flex gap-2">
 
-            <p className="mt-1 text-xs text-[#738080]">
-              Read-only monitoring mode
+              <span
+                className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                  postureControlAvailable
+                    ? "bg-emerald-50 text-emerald-700"
+                    : "bg-amber-50 text-amber-700"
+                }`}
+              >
+                Posture:{" "}
+                {postureControlAvailable
+                  ? "Armed"
+                  : "Locked"}
+              </span>
+
+              <span
+                className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                  locomotionControlAvailable
+                    ? "bg-emerald-50 text-emerald-700"
+                    : "bg-amber-50 text-amber-700"
+                }`}
+              >
+                Locomotion:{" "}
+                {locomotionControlAvailable
+                  ? "Armed"
+                  : "Locked"}
+              </span>
+
+            </div>
+
+            <p className="mt-2 text-xs text-[#738080]">
+              {capabilities?.message ||
+                capabilityError ||
+                "Checking physical control capability"}
             </p>
-          </div>
+          </Panel>
+
         </div>
 
+        <section>
+
+          <div className="mb-3 flex items-center justify-between gap-3">
+
+            <h2 className="text-xl font-bold">
+              Live Robot Perception
+            </h2>
+
+            <span className="text-xs text-[#738080]">
+              Camera + LiDAR
+            </span>
+
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+
+            <CameraPreview />
+
+            <LidarPreview />
+
+          </div>
+
+        </section>
+
         <div className="grid gap-5 lg:grid-cols-[1fr_340px]">
+
           <div className="space-y-5">
-            <section className="rounded-xl border border-[#d8dcda] bg-white p-6">
+
+            <Panel>
+
               <div className="flex items-center gap-3">
+
                 <Power className="h-6 w-6 text-[#00866a]" />
 
                 <div>
+
                   <h2 className="text-xl font-bold">
                     Robot Operating Modes
                   </h2>
 
                   <p className="mt-1 text-sm text-[#738080]">
-                    Actual physical FSM identification
+                    Physical G1 FSM and guarded control
                   </p>
+
                 </div>
+
               </div>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2">
+
                 {MODES.map((mode) => {
+
                   const Icon = mode.icon;
+
                   const active =
-                    live && currentFsm === mode.id;
+                    live &&
+                    currentFsm === mode.id;
+
+                  const isPhysicalControl =
+                    mode.action !== null;
+
+                  const isLocomotion =
+                    mode.action ===
+                    "start_locomotion";
+
+                  const capabilityAvailable =
+                    isLocomotion
+                      ? locomotionControlAvailable
+                      : postureControlAvailable;
+
+                  const sourceGuard =
+                    mode.sourceFsm ===
+                    null ||
+                    currentFsm ===
+                      mode.sourceFsm;
+
+                  const buttonEnabled =
+                    isPhysicalControl &&
+                    live &&
+                    capabilityAvailable &&
+                    sourceGuard &&
+                    controlBusy === null;
+
+                  let buttonText =
+                    "Physical Control Locked";
+
+                  if (controlBusy === mode.action) {
+                    buttonText =
+                      "Sending...";
+                  } else if (active) {
+                    buttonText =
+                      "Current Mode";
+                  } else if (!live) {
+                    buttonText =
+                      "G1 Offline";
+                  } else if (!capabilityAvailable) {
+                    buttonText =
+                      isLocomotion
+                        ? "Locomotion Locked"
+                        : "Physical Control Locked";
+                  } else if (!sourceGuard) {
+                    buttonText =
+                      `Requires FSM ${mode.sourceFsm}`;
+                  } else if (
+                    isLocomotion
+                  ) {
+                    buttonText =
+                      "Start Locomotion";
+                  } else {
+                    buttonText =
+                      "Activate Mode";
+                  }
 
                   return (
                     <div
@@ -535,7 +1068,9 @@ export default function RobotControlPage() {
                           : "border-[#dfe5e1] bg-[#fafbfa]"
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-3">
+
+                      <div className="flex items-start justify-between">
+
                         <Icon
                           className={`h-6 w-6 ${
                             active
@@ -547,6 +1082,7 @@ export default function RobotControlPage() {
                         {active && (
                           <CheckCircle2 className="h-5 w-5 text-[#00866a]" />
                         )}
+
                       </div>
 
                       <p className="mt-4 font-semibold">
@@ -554,126 +1090,246 @@ export default function RobotControlPage() {
                       </p>
 
                       <p className="mt-1 text-xs text-[#738080]">
-                        FSM {mode.id} · {mode.description}
+                        FSM {mode.id} ·{" "}
+                        {mode.description}
                       </p>
 
-                      <button
-                        type="button"
-                        disabled
-                        className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-[#d8dcda] bg-white px-3 py-2 text-xs font-semibold text-[#738080] opacity-70"
-                      >
-                        <LockKeyhole className="h-3.5 w-3.5" />
-                        {active
-                          ? "Current Mode"
-                          : "Physical Control Locked"}
-                      </button>
+                      {isPhysicalControl ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={
+                              !buttonEnabled
+                            }
+                            onClick={() => {
+                              if (
+                                mode.action
+                              ) {
+                                void requestPhysicalControl(
+                                  mode.action
+                                );
+                              }
+                            }}
+                            className={`mt-4 flex w-full items-center justify-center gap-2 rounded-lg px-3 py-3 text-xs font-semibold transition ${
+                              buttonEnabled
+                                ? "bg-[#00866a] text-white hover:bg-[#007457] active:scale-[0.99]"
+                                : "border border-[#d8dcda] bg-white text-[#738080] opacity-70"
+                            }`}
+                          >
+
+                            {controlBusy ===
+                            mode.action ? (
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            ) : buttonEnabled ? (
+                              <Power className="h-3.5 w-3.5" />
+                            ) : (
+                              <LockKeyhole className="h-3.5 w-3.5" />
+                            )}
+
+                            {buttonText}
+
+                          </button>
+
+                          {isLocomotion && (
+                            <p
+                              className={`mt-2 text-center text-[11px] ${
+                                locomotionReady
+                                  ? "text-[#00866a]"
+                                  : "text-[#738080]"
+                              }`}
+                            >
+                              {locomotionReady
+                                ? "Guard passed: FSM 4 → FSM 500"
+                                : "Requires physical FSM 4 and armed locomotion control"}
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled
+                          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-[#d8dcda] bg-white px-3 py-3 text-xs font-semibold text-[#738080] opacity-70"
+                        >
+                          <LockKeyhole className="h-3.5 w-3.5" />
+                          Physical Control Locked
+                        </button>
+                      )}
+
                     </div>
                   );
                 })}
+
               </div>
 
-              <p className="mt-4 text-xs leading-relaxed text-[#738080]">
-                Damp, Stand, Sit and Locomotion transitions
-                are safety-sensitive physical actions.
-                This dashboard monitors the reported FSM
-                but does not initiate mode changes.
-              </p>
-            </section>
+              <div className="mt-4 flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
 
-            <section className="rounded-xl border border-[#d8dcda] bg-white p-6">
+                <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700" />
+
+                <div className="text-xs leading-relaxed text-amber-900">
+
+                  <p>
+                    Physical posture and locomotion
+                    transitions require backend arming
+                    and operator confirmation.
+                  </p>
+
+                  <p className="mt-2">
+                    <strong>
+                      Locomotion is guarded:
+                    </strong>{" "}
+                    FSM 500 can only be requested
+                    when the physical G1 currently
+                    reports FSM 4.
+                  </p>
+
+                  <p className="mt-2">
+                    FSM 500 only selects the
+                    locomotion controller. No velocity,
+                    gait or walking command is sent by
+                    this page.
+                  </p>
+
+                </div>
+
+              </div>
+
+            </Panel>
+
+            <Panel>
+
               <div className="flex items-center gap-3">
+
                 <Footprints className="h-6 w-6 text-[#00866a]" />
 
                 <div>
+
                   <h2 className="text-xl font-bold">
                     Walking Controls
                   </h2>
 
                   <p className="mt-1 text-sm text-[#738080]">
-                    Interactive simulation · No physical movement
+                    Browser simulation · No physical movement
                   </p>
+
                 </div>
+
               </div>
 
-              <div className="mx-auto mt-8 grid max-w-sm grid-cols-3 gap-3">
+              <div className="mx-auto mt-7 grid max-w-sm grid-cols-3 gap-3">
+
                 <div />
 
                 <MotionButton
                   label="Forward"
-                  command="FORWARD"
-                  icon={<ArrowUp className="h-6 w-6" />}
-                  onCommand={simulateMovement}
+                  icon={
+                    <ArrowUp className="h-6 w-6" />
+                  }
+                  onClick={() =>
+                    simulateMovement(
+                      "FORWARD"
+                    )
+                  }
                 />
 
                 <div />
 
                 <MotionButton
                   label="Turn Left"
-                  command="TURN_LEFT"
-                  icon={<RotateCcw className="h-6 w-6" />}
-                  onCommand={simulateMovement}
+                  icon={
+                    <RotateCcw className="h-6 w-6" />
+                  }
+                  onClick={() =>
+                    simulateMovement(
+                      "TURN_LEFT"
+                    )
+                  }
                 />
 
                 <MotionButton
                   label="Sim Stop"
-                  command="STOP"
-                  icon={<Square className="h-6 w-6" />}
-                  onCommand={simulateMovement}
+                  icon={
+                    <Square className="h-6 w-6" />
+                  }
+                  onClick={() =>
+                    simulateMovement(
+                      "STOP"
+                    )
+                  }
                   stop
                 />
 
                 <MotionButton
                   label="Turn Right"
-                  command="TURN_RIGHT"
-                  icon={<RotateCw className="h-6 w-6" />}
-                  onCommand={simulateMovement}
+                  icon={
+                    <RotateCw className="h-6 w-6" />
+                  }
+                  onClick={() =>
+                    simulateMovement(
+                      "TURN_RIGHT"
+                    )
+                  }
                 />
 
                 <div />
 
                 <MotionButton
                   label="Backward"
-                  command="BACKWARD"
-                  icon={<ArrowDown className="h-6 w-6" />}
-                  onCommand={simulateMovement}
+                  icon={
+                    <ArrowDown className="h-6 w-6" />
+                  }
+                  onClick={() =>
+                    simulateMovement(
+                      "BACKWARD"
+                    )
+                  }
                 />
 
                 <div />
+
               </div>
 
-              <div className="mt-7 flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <div className="mt-6 flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
+
                 <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700" />
 
-                <p className="text-sm leading-relaxed text-amber-900">
-                  Walking buttons operate only in the
-                  browser simulation. The Sim Stop button
-                  does not stop the physical G1 and is not
-                  an emergency stop.
+                <p className="text-sm text-amber-900">
+                  Walking buttons operate only in
+                  simulation. Sim Stop is not a physical
+                  robot stop or emergency stop.
                 </p>
+
               </div>
-            </section>
+
+            </Panel>
+
           </div>
 
           <aside className="space-y-5">
-            <section className="rounded-xl border border-[#d8dcda] bg-white p-6">
+
+            <Panel>
+
               <div className="flex items-center gap-2">
+
                 <MapPin className="h-5 w-5 text-[#00866a]" />
 
                 <h2 className="text-lg font-bold">
                   Record Robot State
                 </h2>
+
               </div>
 
-              <p className="mt-3 text-sm leading-relaxed text-[#738080]">
-                Save the live robot FSM and observation
-                timestamp for your experiment log.
+              <p className="mt-3 text-sm text-[#738080]">
+                Save the current physical FSM
+                together with its robot timestamp.
               </p>
 
               <button
                 type="button"
                 disabled={!live}
-                onClick={recordSnapshot}
-                className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-[#00866a] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#007457] disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={
+                  recordSnapshot
+                }
+                className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-[#00866a] px-4 py-3 text-sm font-semibold text-white hover:bg-[#007457] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Save className="h-4 w-4" />
                 Record State
@@ -681,54 +1337,70 @@ export default function RobotControlPage() {
 
               <button
                 type="button"
-                disabled={snapshots.length === 0}
-                onClick={exportSnapshots}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#d8dcda] px-4 py-3 text-sm font-medium transition hover:bg-[#f5f7f6] disabled:opacity-40"
+                disabled={
+                  snapshots.length ===
+                  0
+                }
+                onClick={
+                  exportSnapshots
+                }
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#d8dcda] px-4 py-3 text-sm font-medium hover:bg-[#f5f7f6] disabled:opacity-40"
               >
                 <Download className="h-4 w-4" />
                 Export JSON
               </button>
 
               <div className="mt-4 space-y-2">
-                {snapshots.length === 0 ? (
+
+                {snapshots.length ===
+                0 ? (
                   <p className="text-xs text-[#83908c]">
-                    No robot states recorded yet.
+                    No recorded states yet.
                   </p>
                 ) : (
-                  snapshots.map((item) => (
-                    <div
-                      key={item.id}
-                      className="rounded-lg border border-[#e3e8e5] p-3"
-                    >
-                      <p className="text-sm font-semibold">
-                        {item.name}
-                      </p>
+                  snapshots.map(
+                    (item) => (
+                      <div
+                        key={item.id}
+                        className="rounded-lg border border-[#e3e8e5] p-3"
+                      >
+                        <p className="text-sm font-semibold">
+                          {item.name}
+                        </p>
 
-                      <p className="mt-1 text-xs text-[#738080]">
-                        FSM {item.fsm_id} ·{" "}
-                        {new Date(
-                          item.recorded_at
-                        ).toLocaleTimeString()}
-                      </p>
-                    </div>
-                  ))
+                        <p className="mt-1 text-xs text-[#738080]">
+                          FSM{" "}
+                          {item.fsm_id}{" "}
+                          ·{" "}
+                          {new Date(
+                            item.recorded_at
+                          ).toLocaleTimeString()}
+                        </p>
+                      </div>
+                    )
+                  )
                 )}
+
               </div>
 
-              <p className="mt-4 text-xs leading-relaxed text-[#83908c]">
-                Records contain FSM and timestamps, not
-                robot XYZ position or joint angles.
-                Data stays in browser memory until exported.
+              <p className="mt-4 text-xs text-[#83908c]">
+                Records currently contain FSM and
+                timestamps. Position and joint recording
+                will be added to the motion recorder later.
               </p>
-            </section>
 
-            <section className="rounded-xl border border-[#d8dcda] bg-white p-6">
+            </Panel>
+
+            <Panel>
+
               <h2 className="text-lg font-bold">
                 Simulation State
               </h2>
 
               <div className="mt-5 space-y-4 text-sm">
-                <div className="flex justify-between gap-2">
+
+                <div className="flex justify-between">
+
                   <span className="text-[#738080]">
                     Last Command
                   </span>
@@ -736,9 +1408,11 @@ export default function RobotControlPage() {
                   <span className="font-semibold">
                     {lastCommand}
                   </span>
+
                 </div>
 
-                <div className="flex justify-between gap-2">
+                <div className="flex justify-between">
+
                   <span className="text-[#738080]">
                     Simulated Steps
                   </span>
@@ -746,9 +1420,11 @@ export default function RobotControlPage() {
                   <span className="font-semibold">
                     {simulatedSteps}
                   </span>
+
                 </div>
 
-                <div className="flex justify-between gap-2">
+                <div className="flex justify-between">
+
                   <span className="text-[#738080]">
                     Simulated Heading
                   </span>
@@ -756,59 +1432,198 @@ export default function RobotControlPage() {
                   <span className="font-semibold">
                     {simulatedHeading}°
                   </span>
+
                 </div>
+
               </div>
 
-              <p className="mt-4 text-xs text-[#83908c]">
-                These values are simulation placeholders,
-                not measured physical movement.
-              </p>
-            </section>
+            </Panel>
 
-            <section className="rounded-xl border border-[#d8dcda] bg-white p-6">
-              <h2 className="flex items-center gap-2 text-lg font-bold">
-                <Clock3 className="h-5 w-5 text-[#00866a]" />
-                Command History
+            <Panel>
+
+              <h2 className="text-lg font-bold">
+                Physical FSM Sequence
               </h2>
 
-              {logs.length === 0 ? (
+              <div className="mt-5 space-y-3">
+
+                <div
+                  className={`rounded-lg border p-3 ${
+                    currentFsm === 0
+                      ? "border-[#00866a] bg-[#eef8f3]"
+                      : "border-[#e3e8e5]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+
+                    <span className="text-sm font-semibold">
+                      FSM 0
+                    </span>
+
+                    <span className="text-xs text-[#738080]">
+                      Idle
+                    </span>
+
+                  </div>
+
+                  <p className="mt-1 text-xs text-[#738080]">
+                    → Damp
+                  </p>
+
+                </div>
+
+                <div
+                  className={`rounded-lg border p-3 ${
+                    currentFsm === 1
+                      ? "border-[#00866a] bg-[#eef8f3]"
+                      : "border-[#e3e8e5]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+
+                    <span className="text-sm font-semibold">
+                      FSM 1
+                    </span>
+
+                    <span className="text-xs text-[#738080]">
+                      Damp
+                    </span>
+
+                  </div>
+
+                  <p className="mt-1 text-xs text-[#738080]">
+                    → Stand Up
+                  </p>
+
+                </div>
+
+                <div
+                  className={`rounded-lg border p-3 ${
+                    currentFsm === 4
+                      ? "border-[#00866a] bg-[#eef8f3]"
+                      : "border-[#e3e8e5]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+
+                    <span className="text-sm font-semibold">
+                      FSM 4
+                    </span>
+
+                    <span className="text-xs text-[#738080]">
+                      Stand
+                    </span>
+
+                  </div>
+
+                  <p className="mt-1 text-xs text-[#738080]">
+                    → Start Locomotion
+                  </p>
+
+                </div>
+
+                <div
+                  className={`rounded-lg border p-3 ${
+                    currentFsm === 500
+                      ? "border-[#00866a] bg-[#eef8f3]"
+                      : "border-[#e3e8e5]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+
+                    <span className="text-sm font-semibold">
+                      FSM 500
+                    </span>
+
+                    <span className="text-xs text-[#738080]">
+                      Locomotion
+                    </span>
+
+                  </div>
+
+                  <p className="mt-1 text-xs text-[#738080]">
+                    Controller selected
+                  </p>
+
+                </div>
+
+              </div>
+
+              <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3">
+
+                <p className="text-xs leading-relaxed text-blue-900">
+                  FSM 500 does not automatically mean
+                  walking. It selects the locomotion
+                  controller. Physical movement commands
+                  remain separate.
+                </p>
+
+              </div>
+
+            </Panel>
+
+            <Panel>
+
+              <h2 className="flex items-center gap-2 text-lg font-bold">
+
+                <Clock3 className="h-5 w-5 text-[#00866a]" />
+
+                Command History
+
+              </h2>
+
+              {logs.length ===
+              0 ? (
                 <p className="mt-4 text-sm text-[#738080]">
                   No commands recorded yet.
                 </p>
               ) : (
                 <div className="mt-4 max-h-72 space-y-3 overflow-y-auto">
-                  {logs.map((entry) => (
-                    <div
-                      key={entry.id}
-                      className="rounded-lg border border-[#e3e8e5] p-3"
-                    >
-                      <div className="flex justify-between gap-2">
-                        <span className="text-sm font-semibold">
-                          {entry.action}
-                        </span>
 
-                        <span className="text-xs text-[#83908c]">
-                          {new Date(
-                            entry.timestamp
-                          ).toLocaleTimeString()}
-                        </span>
+                  {logs.map(
+                    (entry) => (
+                      <div
+                        key={entry.id}
+                        className="rounded-lg border border-[#e3e8e5] p-3"
+                      >
+
+                        <div className="flex justify-between gap-2">
+
+                          <span className="text-sm font-semibold">
+                            {entry.action}
+                          </span>
+
+                          <span className="text-xs text-[#83908c]">
+                            {new Date(
+                              entry.timestamp
+                            ).toLocaleTimeString()}
+                          </span>
+
+                        </div>
+
+                        <p className="mt-1 text-xs text-[#738080]">
+                          {entry.result}
+                        </p>
+
                       </div>
+                    )
+                  )}
 
-                      <p className="mt-1 text-xs text-[#738080]">
-                        {entry.result}
-                      </p>
-                    </div>
-                  ))}
                 </div>
               )}
-            </section>
+
+            </Panel>
+
           </aside>
+
         </div>
 
         <p className="text-center text-xs text-[#83908c]">
           HFU IPSE · Unitree G1 Research Platform ·
-          Read-only physical monitoring
+          Physical posture and locomotion control protected
+          by backend guards
         </p>
+
       </div>
     </main>
   );
