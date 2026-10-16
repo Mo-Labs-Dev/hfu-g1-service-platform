@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-from unitree_sdk2py.idl.default import unitree_go_msg_dds__SportModeState_
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
 
@@ -35,7 +35,7 @@ ALLOW_LOCOMOTION_COMMANDS = (
 CONTROL_TOKEN = os.getenv("G1_BRIDGE_TOKEN", "")
 
 # SAFETY: physical SDK velocity output remains disabled.
-PHYSICAL_MOTION_ENABLED = False
+PHYSICAL_MOTION_ENABLED = os.getenv("G1_ENABLE_PHYSICAL_PULSE") == "1"
 
 MAX_VX = 0.05
 MAX_VY = 0.05
@@ -87,45 +87,61 @@ robot_client = create_client()
 # Live state feedback is independent of the velocity command API.
 # A message-type field alone is not proof that the robot publishes this topic.
 class LiveMotionFeedback:
+    """Read-only G1 LowState feedback; NOT translational velocity feedback."""
+
     def __init__(self):
         self.lock = threading.Lock()
         self.last_received = None
-        self.velocity = None
         self.yaw_speed = None
+        self.gyroscope = None
+        self.accelerometer = None
+        self.message_count = 0
         self.subscriber = None
         self.error = None
 
     def callback(self, message):
         try:
-            velocity = [float(v) for v in message.velocity]
-            yaw_speed = float(message.yaw_speed)
-            if len(velocity) < 2 or not all(math.isfinite(v) for v in velocity) or not math.isfinite(yaw_speed):
+            gyro = [float(v) for v in message.imu_state.gyroscope]
+            accel = [float(v) for v in message.imu_state.accelerometer]
+            if len(gyro) != 3 or len(accel) != 3:
+                return
+            if not all(math.isfinite(v) for v in gyro + accel):
                 return
             with self.lock:
-                self.velocity = velocity
-                self.yaw_speed = yaw_speed
+                self.gyroscope = gyro
+                self.accelerometer = accel
+                self.yaw_speed = gyro[2]
                 self.last_received = time.monotonic()
+                self.message_count += 1
+                self.error = None
         except Exception:
-            logger.exception("Invalid sport-mode feedback")
+            logger.exception("Invalid G1 LowState feedback")
 
     def start(self):
         try:
-            self.subscriber = ChannelSubscriber("rt/sportmodestate", unitree_go_msg_dds__SportModeState_)
+            self.subscriber = ChannelSubscriber("rt/lowstate", LowState_)
             self.subscriber.Init(self.callback, 10)
-            logger.info("Sport-mode feedback subscriber started")
+            logger.info("G1 LowState feedback subscriber started")
         except Exception as error:
-            self.error = str(error)
-            logger.exception("Sport-mode feedback unavailable")
+            with self.lock:
+                self.error = str(error)
+            logger.exception("G1 LowState feedback unavailable")
 
     def status(self):
         with self.lock:
             age = None if self.last_received is None else time.monotonic() - self.last_received
             return {
+                "feedback_source": "rt/lowstate",
                 "feedback_received": self.last_received is not None,
                 "feedback_fresh": age is not None and age <= 0.5,
                 "feedback_age_ms": None if age is None else round(age * 1000),
-                "measured_velocity": self.velocity,
+                "feedback_message_count": self.message_count,
+                "measured_velocity": None,
                 "measured_yaw_speed": self.yaw_speed,
+                "imu_gyroscope": None if self.gyroscope is None else list(self.gyroscope),
+                "imu_accelerometer": None if self.accelerometer is None else list(self.accelerometer),
+                "translation_velocity_available": False,
+                "stop_verified_by_feedback": False,
                 "feedback_error": self.error,
             }
 
@@ -221,7 +237,7 @@ def get_live_status() -> dict:
         "source": "physical_g1",
         "fsm_id": fsm_id,
         "locomotion_mode": fsm_id == 500,
-        "motion_enabled": False,
+        "motion_enabled": False,  # Physical continuous velocity commands are not authorized.
         "posture_control_available": posture_available(),
         "locomotion_control_available": locomotion_available(),
         "timestamp": utc_now(),
@@ -363,7 +379,18 @@ class PhysicalMotionController:
         self.last_command_time = 0.0
         self.watchdog_triggered = False
         self.stop_requested = False
+        self.last_stop_error = None
+        self.last_stop_sent = False
         self.lock = motion_lock
+        self.command_lock = threading.RLock()
+        self.command_generation = 0
+        self.pulse_active = False
+        self.fault_latched = False
+        self.stop_event = threading.Event()
+        self.last_stop_rpc_elapsed_ms = None
+        self.last_stop_reason = None
+        self.watchdog_last_elapsed_ms = None
+        self.watchdog_stop_attempted = False
 
     def status(self) -> dict:
         with self.lock:
@@ -374,14 +401,24 @@ class PhysicalMotionController:
                     if self.armed
                     else "physical_disarmed"
                 ),
-                "physical_motion_enabled": False,
+                "physical_motion_enabled": PHYSICAL_MOTION_ENABLED,
+                "pulse_active": self.pulse_active,
+                "fault_latched": self.fault_latched,
                 "armed": self.armed,
                 "velocity_commands_available": False,
                 "velocity": list(self.velocity),
-                "watchdog_timeout_ms": 300,
+                "watchdog_timeout_ms": round(WATCHDOG_TIMEOUT * 1000),
                 "watchdog_triggered": self.watchdog_triggered,
                 "stop_requested": self.stop_requested,
                 "stop_verified": False,
+                "last_stop_sent": self.last_stop_sent,
+                "last_stop_error": self.last_stop_error,
+                "last_stop_reason": self.last_stop_reason,
+                "last_stop_rpc_elapsed_ms": self.last_stop_rpc_elapsed_ms,
+                "watchdog_last_elapsed_ms": self.watchdog_last_elapsed_ms,
+                "watchdog_stop_attempted": self.watchdog_stop_attempted,
+                "stop_verification_reason": "No independently measured translational velocity; SDK acknowledgment is not physical stop verification",
+                "command_generation": self.command_generation,
                 "timestamp": utc_now(),
             }
 
@@ -392,7 +429,13 @@ class PhysicalMotionController:
                 "error": "Operator confirmation required",
             }
 
-        with self.lock:
+        with self.command_lock, self.lock:
+            if self.fault_latched:
+                return 409, {"status": "blocked", "error": "Fault latched; restart bridge after operator inspection"}
+            if self.pulse_active:
+                return 409, {"status": "blocked", "error": "Pulse active"}
+            self.stop_event.clear()
+            self.command_generation += 1
             self.armed = True
             self.velocity = [0.0, 0.0, 0.0]
             self.last_command_time = time.monotonic()
@@ -449,7 +492,7 @@ class PhysicalMotionController:
                 "error": "Velocity exceeds configured limits",
             }
 
-        with self.lock:
+        with self.command_lock, self.lock:
             if not self.armed:
                 return 403, {
                     "status": "blocked",
@@ -462,6 +505,7 @@ class PhysicalMotionController:
                     "error": "Watchdog tripped; rearm required",
                 }
 
+            self.command_generation += 1
             self.velocity = [vx, vy, omega]
             self.last_command_time = time.monotonic()
             self.stop_requested = False
@@ -479,84 +523,248 @@ class PhysicalMotionController:
             "physical_motion_enabled": False,
         }
 
-    def stop(self) -> tuple[int, dict]:
+    def _send_sdk_stop(self, reason: str) -> tuple[int, dict]:
+        """Best-effort SDK zero-motion request; not proof of physical stopping."""
+        started = time.monotonic()
         with self.lock:
-            self.velocity = [0.0, 0.0, 0.0]
-            self.stop_requested = True
-
-        logger.warning("Dry-run stop requested")
-
-        return 200, {
-            "status": "stop_requested",
-            "mode": "physical_dry_run",
-            "stop_verified": False,
-            "physical_motion_enabled": False,
-        }
-
-    def physical_stop_test(self) -> tuple[int, dict]:
-        # Only invoke while the robot is already stationary, with an
-        # independent emergency stop and operator supervision.
-        # StopMove returns None, so its return cannot verify stopping.
-        with self.lock:
-            self.armed = False
-            self.velocity = [0.0, 0.0, 0.0]
-            self.stop_requested = True
-        if not client_lock.acquire(blocking=False):
-            return 409, {"status": "busy", "error": "SDK busy; stop was not sent", "stop_verified": False}
+            self.last_stop_reason = reason
+            self.last_stop_rpc_elapsed_ms = None
+        acquired = client_lock.acquire(timeout=1.0)
+        if not acquired:
+            error = "SDK busy; zero-velocity stop was not sent"
+            with self.lock:
+                self.last_stop_sent = False
+                self.last_stop_error = error
+                self.last_stop_rpc_elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+            logger.error("%s: %s", reason, error)
+            return 503, {
+                "status": "stop_failed", "error": error,
+                "stop_verified": False, "physical_motion_enabled": False,
+            }
         try:
-            robot_client.StopMove()
-            logger.warning("Physical StopMove() sent; verification pending")
+            # StopMove() discards the SDK response code. Use its equivalent
+            # zero-velocity request directly so RPC errors are observable.
+            sdk_code = robot_client.SetVelocity(0.0, 0.0, 0.0, duration=1.0)
+            with self.lock:
+                self.last_stop_rpc_elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+            if sdk_code != 0:
+                error = f"Zero-velocity SDK request returned code {sdk_code}"
+                with self.lock:
+                    self.last_stop_sent = False
+                    self.last_stop_error = error
+                logger.error("Stop request failed (%s): %s", reason, error)
+                return 503, {
+                    "status": "stop_failed",
+                    "reason": reason,
+                    "sdk_code": sdk_code,
+                    "error": error,
+                    "stop_verified": False,
+                    "physical_motion_enabled": False,
+                }
+            with self.lock:
+                self.last_stop_sent = True
+                self.last_stop_error = None
+            logger.warning("Zero-velocity SDK request acknowledged (%s); physical stop unverified", reason)
             return 200, {
-                "status": "physical_stop_sent",
-                "physical_motion_enabled": False,
+                "status": "stop_acknowledged",
+                "reason": reason,
+                "sdk_code": sdk_code,
                 "stop_verified": False,
+                "physical_motion_enabled": PHYSICAL_MOTION_ENABLED,
                 "feedback": motion_feedback.status(),
             }
         except Exception as error:
-            logger.exception("Physical stop request failed")
-            return 503, {"status": "stop_failed", "error": str(error), "stop_verified": False}
+            logger.exception("StopMove() failed (%s)", reason)
+            with self.lock:
+                self.last_stop_sent = False
+                self.last_stop_error = str(error)
+                self.last_stop_rpc_elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+            return 503, {
+                "status": "stop_failed", "error": str(error),
+                "stop_verified": False, "physical_motion_enabled": False,
+            }
         finally:
             client_lock.release()
 
-    def disarm(self) -> tuple[int, dict]:
+    def stop(self) -> tuple[int, dict]:
+        self.stop_event.set()
         with self.lock:
+            self.command_generation += 1
             self.armed = False
             self.velocity = [0.0, 0.0, 0.0]
             self.stop_requested = True
+            self.fault_latched = self.fault_latched or self.pulse_active
+        return self._send_sdk_stop("operator_stop")
 
-        logger.warning("Motion controller disarmed")
+    def physical_stop_test(self) -> tuple[int, dict]:
+        self.stop_event.set()
+        # Stationary test only; StopMove() returning does not verify motion.
+        with self.lock:
+            self.command_generation += 1
+            self.armed = False
+            self.velocity = [0.0, 0.0, 0.0]
+            self.stop_requested = True
+            self.fault_latched = self.fault_latched or self.pulse_active
+        return self._send_sdk_stop("stationary_stop_test")
 
-        return 200, {
-            "status": "disarmed",
-            "physical_motion_enabled": False,
-            "stop_verified": False,
-        }
+    def disarm(self) -> tuple[int, dict]:
+        self.stop_event.set()
+        with self.lock:
+            self.command_generation += 1
+            self.armed = False
+            self.velocity = [0.0, 0.0, 0.0]
+            self.stop_requested = True
+            self.fault_latched = self.fault_latched or self.pulse_active
+        return self._send_sdk_stop("disarm")
+
+    def test_pulse(self, confirmed: bool) -> tuple[int, dict]:
+        """Single 150 ms dry-run pulse; intentionally no nonzero SDK call."""
+        if not confirmed:
+            return 400, {"status": "blocked", "error": "Operator confirmation required"}
+        with self.command_lock:
+            with self.lock:
+                if not self.armed or self.watchdog_triggered:
+                    return 409, {"status": "blocked", "error": "Arm dry-run controller first"}
+            feedback = motion_feedback.status()
+            if not feedback["feedback_fresh"]:
+                return 503, {"status": "blocked", "error": "Stale LowState feedback"}
+            with client_lock:
+                fsm = read_fsm()
+            if fsm != 500:
+                return 409, {"status": "blocked", "error": f"FSM {fsm} is not locomotion mode"}
+            with self.lock:
+                self.command_generation += 1
+                self.velocity = [0.03, 0.0, 0.0]
+                self.last_command_time = time.monotonic()
+                generation = self.command_generation
+            logger.warning("DRY RUN test pulse generation=%s vx=0.03 for 150ms", generation)
+            time.sleep(0.150)
+            with self.lock:
+                self.command_generation += 1
+                self.velocity = [0.0, 0.0, 0.0]
+                self.armed = False
+                self.stop_requested = True
+            stop_code, stop_result = self._send_sdk_stop("dry_run_pulse_completed")
+            return stop_code, {
+                "status": "dry_run_pulse_completed" if stop_code == 200 else "stop_failed",
+                "nonzero_sdk_velocity_sent": False,
+                "simulated_velocity": [0.03, 0.0, 0.0],
+                "simulated_duration_ms": 150,
+                "stop": stop_result,
+                "physical_motion_enabled": False,
+            }
+
+    def physical_pulse(self, confirmed: bool) -> tuple[int, dict]:
+        """One short forward SDK command, opt-in only; no continuous mode.
+
+        The stop RPC acknowledgment does not prove physical stopping.
+        Hardware emergency stop and human supervision remain necessary.
+        """
+        if not PHYSICAL_MOTION_ENABLED:
+            return 403, {"status": "blocked", "error": "Physical pulse gate disabled"}
+        if not confirmed:
+            return 400, {"status": "blocked", "error": "Operator confirmation required"}
+        if not self.command_lock.acquire(blocking=False):
+            return 409, {"status": "blocked", "error": "Another command is active"}
+        sent = False
+        result = None
+        stop_code = 503
+        stop_result = {"status": "stop_not_attempted"}
+        try:
+            with self.lock:
+                if self.fault_latched or self.pulse_active:
+                    return 409, {"status": "blocked", "error": "Motion fault or active pulse"}
+                if not self.armed or self.watchdog_triggered or self.stop_event.is_set():
+                    return 409, {"status": "blocked", "error": "Arm controller immediately before pulse"}
+            if not motion_feedback.status()["feedback_fresh"]:
+                return 503, {"status": "blocked", "error": "Stale LowState feedback"}
+            if not client_lock.acquire(timeout=0.2):
+                return 503, {"status": "blocked", "error": "SDK busy"}
+            try:
+                fsm = read_fsm()
+                if fsm != 500:
+                    return 409, {"status": "blocked", "error": f"FSM {fsm} != 500"}
+                if self.stop_event.is_set() or not motion_feedback.status()["feedback_fresh"]:
+                    return 409, {"status": "blocked", "error": "Stop requested or feedback stale"}
+                with self.lock:
+                    self.pulse_active = True
+                    self.command_generation += 1
+                    self.velocity = [0.03, 0.0, 0.0]
+                    self.last_command_time = time.monotonic()
+                # Last cancellation check before issuing the SDK request.
+                # A concurrent stop can still race after this check; the
+                # independent physical E-stop remains mandatory.
+                if self.stop_event.is_set():
+                    result = {"status": "cancelled_before_send"}
+                else:
+                    sent = True  # Outcome uncertain if RPC times out.
+                    logger.warning("PHYSICAL PULSE requested vx=0.03 duration=0.15 seconds")
+                    rpc_started = time.monotonic()
+                    code = robot_client.SetVelocity(0.03, 0.0, 0.0, duration=0.15)
+                    rpc_elapsed_ms = round((time.monotonic() - rpc_started) * 1000, 2)
+                    logger.warning("PHYSICAL PULSE SDK RPC elapsed_ms=%s code=%s", rpc_elapsed_ms, code)
+                    if code != 0:
+                        result = {"status": "motion_sdk_error", "sdk_code": code, "rpc_elapsed_ms": rpc_elapsed_ms}
+                    else:
+                        result = {"status": "motion_acknowledged", "sdk_code": code, "rpc_elapsed_ms": rpc_elapsed_ms}
+            except Exception as exc:
+                result = {"status": "motion_outcome_uncertain", "error": str(exc)}
+                logger.exception("Physical pulse RPC failed; operator intervention may be required")
+            finally:
+                client_lock.release()
+            # Request stop immediately after the SDK call. Do not sleep while moving.
+            # If the RPC blocks, the independent physical E-stop is essential.
+            stop_started = time.monotonic()
+            stop_code, stop_result = self._send_sdk_stop("physical_pulse_end")
+            stop_elapsed_ms = round((time.monotonic() - stop_started) * 1000, 2)
+            logger.warning("PHYSICAL PULSE stop RPC elapsed_ms=%s http_code=%s", stop_elapsed_ms, stop_code)
+            if stop_code != 200 or result["status"] != "motion_acknowledged" or self.stop_event.is_set():
+                logger.error("Physical pulse fault; use physical E-stop if robot moves")
+            return (200 if stop_code == 200 and result["status"] == "motion_acknowledged" and not self.stop_event.is_set() else 503), {
+                "status": "physical_pulse_completed_unverified" if stop_code == 200 and result["status"] == "motion_acknowledged" and not self.stop_event.is_set() else "physical_pulse_fault",
+                "nonzero_sdk_velocity_sent_or_attempted": sent,
+                "requested_velocity": [0.03, 0.0, 0.0],
+                "requested_duration_ms": 150,
+                "motion": result,
+                "stop": stop_result,
+                "stop_rpc_elapsed_ms": stop_elapsed_ms,
+                "stop_verified": False,
+                "operator_must_confirm_stationary": True,
+            }
+        finally:
+            with self.lock:
+                if sent:
+                    self.fault_latched = True  # No second pulse until operator inspects and bridge restarts.
+                self.pulse_active = False
+                self.armed = False
+                self.velocity = [0.0, 0.0, 0.0]
+                self.stop_requested = True
+                self.command_generation += 1
+            self.command_lock.release()
 
     def watchdog_loop(self):
         while True:
             time.sleep(WATCHDOG_INTERVAL)
-
             with self.lock:
                 if not self.armed:
                     continue
-
-                elapsed = (
-                    time.monotonic()
-                    - self.last_command_time
-                )
-
+                elapsed = time.monotonic() - self.last_command_time
                 if elapsed <= WATCHDOG_TIMEOUT:
                     continue
-
+                # Signal cancellation before waiting for the SDK client.
+                # This thread must never wait for command_lock.
+                self.stop_event.set()
+                self.command_generation += 1
                 self.velocity = [0.0, 0.0, 0.0]
                 self.armed = False
                 self.watchdog_triggered = True
+                self.watchdog_last_elapsed_ms = round(elapsed * 1000, 2)
+                self.watchdog_stop_attempted = True
                 self.stop_requested = True
-
-                logger.warning(
-                    "DRY RUN watchdog timeout: %.3f seconds",
-                    elapsed,
-                )
+                self.fault_latched = self.fault_latched or self.pulse_active
+            logger.warning("Watchdog timeout: %.3f seconds", elapsed)
+            # Best effort only: SDK client_lock may still be held by a timed-out RPC.
+            self._send_sdk_stop("watchdog_timeout")
 
 
 motion_controller = PhysicalMotionController()
@@ -632,8 +840,8 @@ class Handler(BaseHTTPRequestHandler):
                 "service": "g1-status-bridge",
                 "posture_control_available": posture_available(),
                 "locomotion_control_available": locomotion_available(),
-                "physical_motion_enabled": False,
-                "motion_controller": "dry_run",
+                "physical_motion_enabled": PHYSICAL_MOTION_ENABLED,
+                "motion_controller": "bounded_physical_pulse" if PHYSICAL_MOTION_ENABLED else "dry_run",
             })
             return
 
@@ -672,6 +880,8 @@ class Handler(BaseHTTPRequestHandler):
             "/physical-motion/stop",
             "/physical-motion/disarm",
             "/physical-motion/physical-stop-test",
+            "/physical-motion/test-pulse",
+            "/physical-motion/physical-pulse",
         )
 
         if self.path not in routes:
@@ -707,6 +917,16 @@ class Handler(BaseHTTPRequestHandler):
 
                 elif self.path == "/physical-motion/arm":
                     code, result = motion_controller.arm(
+                        payload.get("confirmed") is True
+                    )
+
+                elif self.path == "/physical-motion/physical-pulse":
+                    code, result = motion_controller.physical_pulse(
+                        payload.get("confirmed") is True
+                    )
+
+                elif self.path == "/physical-motion/test-pulse":
+                    code, result = motion_controller.test_pulse(
                         payload.get("confirmed") is True
                     )
 
@@ -761,11 +981,11 @@ if __name__ == "__main__":
     )
 
     logger.info(
-        "Physical velocity output: DISABLED"
+        "Physical pulse output enabled: %s", PHYSICAL_MOTION_ENABLED
     )
 
     logger.info(
-        "Motion controller: DRY RUN"
+        "Motion controller: guarded single pulse / dry run"
     )
 
     try:

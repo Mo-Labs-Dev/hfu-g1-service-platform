@@ -10,7 +10,6 @@ import {
 
 import {
   Activity,
-  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Bot,
@@ -54,6 +53,28 @@ type PhysicalStatus = {
   timestamp: string | null;
   error: string | null;
 };
+
+type PhysicalMotionBridgeStatus = {
+  source?: string;
+  connected?: boolean;
+  fsm_id?: number | null;
+  mode?: string;
+  armed?: boolean;
+  physical_motion_enabled?: boolean;
+  velocity_commands_available?: boolean;
+  fault_latched?: boolean;
+  watchdog_triggered?: boolean;
+  stop_verified?: boolean;
+  velocity?: number[];
+  feedback?: {
+    feedback_fresh?: boolean;
+    feedback_age_ms?: number | null;
+    measured_velocity?: number[] | null;
+    stop_verified_by_feedback?: boolean;
+  };
+};
+
+type WalkingMode = "simulation" | "physical";
 
 type ControlCapabilities = {
   posture_control_available: boolean;
@@ -157,7 +178,7 @@ function Panel({
 }) {
   return (
     <section
-      className={`rounded-xl border border-[#d8dcda] bg-white p-5 ${className}`}
+      className={`rounded-2xl border border-[#dce4e3] bg-white p-5 shadow-sm ${className}`}
     >
       {children}
     </section>
@@ -167,19 +188,45 @@ function Panel({
 function MotionButton({
   label,
   icon,
-  onClick,
+  onPress,
+  onRelease,
+  disabled = false,
   stop = false,
 }: {
   label: string;
   icon: ReactNode;
-  onClick: () => void;
+  onPress: () => void;
+  onRelease: () => void;
+  disabled?: boolean;
   stop?: boolean;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
-      className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold transition active:scale-[0.98] ${
+      disabled={disabled}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        onPress();
+      }}
+      onPointerUp={onRelease}
+      onPointerCancel={onRelease}
+      onLostPointerCapture={onRelease}
+      onKeyDown={(event) => {
+        if (event.repeat) return;
+        if (event.key === " " || event.key === "Enter") {
+          event.preventDefault();
+          onPress();
+        }
+      }}
+      onKeyUp={(event) => {
+        if (event.key === " " || event.key === "Enter") {
+          event.preventDefault();
+          onRelease();
+        }
+      }}
+      className={`flex min-h-20 touch-none select-none flex-col items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 ${
         stop
           ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
           : "border-[#d8dfda] bg-white text-[#34413b] hover:bg-[#eef7f3]"
@@ -288,6 +335,8 @@ export default function RobotControlPage() {
   const [refreshing, setRefreshing] =
     useState(false);
 
+  const [controlNotice, setControlNotice] = useState<string | null>(null);
+
   const [controlBusy, setControlBusy] =
     useState<PhysicalControlAction | null>(
       null
@@ -302,11 +351,26 @@ export default function RobotControlPage() {
   const [lastCommand, setLastCommand] =
     useState("None");
 
-  const [simulatedSteps, setSimulatedSteps] =
-    useState(0);
+  const [walkingMode, setWalkingMode] = useState<WalkingMode>("simulation");
+  const [physicalMotionStatus, setPhysicalMotionStatus] =
+    useState<PhysicalMotionBridgeStatus | null>(null);
+  const [physicalMotionError, setPhysicalMotionError] = useState<string | null>(null);
+  const [physicalStopBusy, setPhysicalStopBusy] = useState(false);
+  const [physicalStopMessage, setPhysicalStopMessage] = useState<string | null>(null);
+  const [walkingNotice, setWalkingNotice] = useState<string | null>(null);
 
-  const [simulatedHeading, setSimulatedHeading] =
-    useState(0);
+  const [motionStatus, setMotionStatus] = useState<{
+    mode: string;
+    physical_motion_enabled: boolean;
+    velocity: number[];
+    moving: boolean;
+  } | null>(null);
+  const [motionError, setMotionError] = useState<string | null>(null);
+  const [motionBusy, setMotionBusy] = useState(false);
+  const motionTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const motionActive = useRef(false);
+  const motionSending = useRef(false);
+  const motionGeneration = useRef(0);
 
   const mounted = useRef(true);
   const busy = useRef(false);
@@ -511,20 +575,16 @@ export default function RobotControlPage() {
     capabilities?.locomotion_control_available ===
     true;
 
-  const locomotionReady =
-    live &&
-    currentFsm === 4 &&
-    locomotionControlAvailable &&
-    controlBusy === null;
-
   async function requestPhysicalControl(
     action: PhysicalControlAction
   ) {
     if (controlBusy !== null) {
+      setControlNotice("Another FSM transition is still in progress.");
       return;
     }
 
     if (!live) {
+      setControlNotice(statusError || "Robot feedback is unavailable or stale. Check the connection and refresh.");
       addLog(
         action.toUpperCase(),
         "Blocked: physical G1 is not online."
@@ -542,6 +602,7 @@ export default function RobotControlPage() {
         : postureControlAvailable;
 
     if (!controlAvailable) {
+      setControlNotice(capabilityError || capabilities?.message || "FastAPI has not authorized this FSM action. Check the backend configuration.");
       addLog(
         action.toUpperCase(),
         isLocomotion
@@ -567,6 +628,7 @@ export default function RobotControlPage() {
         : 500;
 
     if (currentFsm !== expectedSource) {
+      setControlNotice(`This transition requires FSM ${expectedSource}; robot currently reports FSM ${currentFsm}. Use the appropriate next transition.`);
       addLog(
         action.toUpperCase(),
         `Blocked: expected FSM ${expectedSource}, current FSM is ${currentFsm}.`
@@ -604,6 +666,7 @@ export default function RobotControlPage() {
       return;
     }
 
+    setControlNotice(null);
     setControlBusy(action);
 
     try {
@@ -648,9 +711,11 @@ export default function RobotControlPage() {
           : `${actionName} command accepted by physical robot backend.`
       );
 
+      setControlNotice(`Command accepted. Checking robot feedback for FSM ${targetFsm}.`);
       await refreshStatus();
       await refreshCapabilities();
     } catch (error) {
+      setControlNotice(error instanceof Error ? error.message : "FSM command failed.");
       addLog(
         actionName.toUpperCase(),
         error instanceof Error
@@ -664,39 +729,202 @@ export default function RobotControlPage() {
     }
   }
 
-  function simulateMovement(
-    command: MotionCommand
-  ) {
+  const fetchMotionStatus = useCallback(async () => {
+    try {
+      const response = await fetch(
+        `${API_URL}/api/physical-robot/motion/status`,
+        { cache: "no-store", signal: AbortSignal.timeout(2500) }
+      );
+      if (!response.ok) throw new Error(`Motion simulator HTTP ${response.status}`);
+      const data = await response.json();
+      if (data.mode !== "simulation" || data.physical_motion_enabled !== false) {
+        throw new Error("Motion simulator identity mismatch");
+      }
+      if (mounted.current) {
+        setMotionStatus(data);
+        setMotionError(null);
+      }
+    } catch (error) {
+      if (mounted.current) {
+        setMotionStatus(null);
+        setMotionError(error instanceof Error ? error.message : "Simulator unavailable");
+      }
+    }
+  }, []);
+
+  const stopMotion = useCallback(async () => {
+    motionActive.current = false;
+    motionGeneration.current += 1;
+    if (motionTimer.current !== null) {
+      clearInterval(motionTimer.current);
+      motionTimer.current = null;
+    }
+    setLastCommand("STOP");
+    try {
+      const response = await fetch(
+        `${API_URL}/api/physical-robot/motion/stop`,
+        { method: "POST", cache: "no-store", signal: AbortSignal.timeout(2500) }
+      );
+      if (!response.ok) throw new Error(`Stop HTTP ${response.status}`);
+      setMotionBusy(false);
+      void fetchMotionStatus();
+    } catch (error) {
+      setMotionError(error instanceof Error ? error.message : "Stop request failed");
+      setMotionBusy(false);
+      addLog("SIM STOP", "Stop request failed; simulator watchdog should expire commands.");
+    }
+  }, [addLog, fetchMotionStatus]);
+
+  const startMotion = useCallback((command: Exclude<MotionCommand, "STOP">) => {
+    if (motionActive.current || motionStatus === null || motionError !== null) return;
+
+    const velocities: Record<Exclude<MotionCommand, "STOP">, [number, number, number]> = {
+      FORWARD: [0.05, 0, 0],
+      BACKWARD: [-0.05, 0, 0],
+      TURN_LEFT: [0, 0, 0.10],
+      TURN_RIGHT: [0, 0, -0.10],
+    };
+    const [vx, vy, omega] = velocities[command];
+    motionActive.current = true;
+    const generation = ++motionGeneration.current;
+    setMotionBusy(true);
     setLastCommand(command);
+    addLog(command, "Simulated motion requested");
 
-    if (command === "FORWARD") {
-      setSimulatedSteps(
-        (value) => value + 1
+    const send = async () => {
+      if (!motionActive.current || generation !== motionGeneration.current || motionSending.current) return;
+      motionSending.current = true;
+      try {
+        const response = await fetch(`${API_URL}/api/physical-robot/motion`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ vx, vy, omega }),
+          cache: "no-store",
+          signal: AbortSignal.timeout(1000),
+        });
+        if (!response.ok) throw new Error(`Motion HTTP ${response.status}`);
+        const data = await response.json();
+        if (data.physical_motion_enabled !== false || data.status !== "simulated") {
+          throw new Error("Unexpected motion response");
+        }
+      } catch (error) {
+        if (generation === motionGeneration.current) {
+          setMotionError(error instanceof Error ? error.message : "Motion request failed");
+          void stopMotion();
+        }
+      } finally {
+        motionSending.current = false;
+      }
+    };
+
+    void send();
+    motionTimer.current = setInterval(() => void send(), 150);
+  }, [motionStatus, motionError, addLog, stopMotion]);
+
+  useEffect(() => {
+    void fetchMotionStatus();
+    const timer = window.setInterval(() => void fetchMotionStatus(), 600);
+    const halt = () => {
+      if (motionActive.current) void stopMotion();
+    };
+    const visibility = () => {
+      if (document.hidden) halt();
+    };
+    window.addEventListener("blur", halt);
+    window.addEventListener("pointerup", halt);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("blur", halt);
+      window.removeEventListener("pointerup", halt);
+      document.removeEventListener("visibilitychange", visibility);
+      if (motionActive.current) void stopMotion();
+    };
+  }, [fetchMotionStatus, stopMotion]);
+
+  const fetchPhysicalMotionStatus = useCallback(async () => {
+    try {
+      const response = await fetch(
+        `${API_URL}/api/physical-robot/physical-motion/status`,
+        { cache: "no-store", signal: AbortSignal.timeout(3000) }
       );
+      if (!response.ok) {
+        throw new Error(`Physical motion status HTTP ${response.status}`);
+      }
+      const data: PhysicalMotionBridgeStatus = await response.json();
+      if (data.source !== "physical_g1") {
+        throw new Error("Unexpected physical motion source");
+      }
+      if (mounted.current) {
+        setPhysicalMotionStatus(data);
+        setPhysicalMotionError(null);
+      }
+    } catch (error) {
+      if (mounted.current) {
+        setPhysicalMotionStatus(null);
+        setPhysicalMotionError(
+          error instanceof Error ? error.message : "Physical bridge unavailable"
+        );
+      }
     }
+  }, []);
 
-    if (command === "BACKWARD") {
-      setSimulatedSteps(
-        (value) => value - 1
+  useEffect(() => {
+    if (walkingMode !== "physical") return;
+    void fetchPhysicalMotionStatus();
+    const timer = window.setInterval(() => {
+      void fetchPhysicalMotionStatus();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [walkingMode, fetchPhysicalMotionStatus]);
+
+  const requestPhysicalStop = useCallback(async () => {
+    if (physicalStopBusy) return;
+    setPhysicalStopBusy(true);
+    setPhysicalStopMessage(null);
+    try {
+      const response = await fetch(
+        `${API_URL}/api/physical-robot/physical-motion/stop`,
+        { method: "POST", cache: "no-store", signal: AbortSignal.timeout(6000) }
       );
-    }
-
-    if (command === "TURN_LEFT") {
-      setSimulatedHeading(
-        (value) => value - 15
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = result.detail;
+        throw new Error(typeof detail === "string" ? detail : `Stop HTTP ${response.status}`);
+      }
+      setPhysicalStopMessage(
+        "Zero-velocity stop request sent. Physical stopping is NOT verified."
       );
+      addLog("PHYSICAL STOP", "Bridge stop request returned; stopping not physically verified.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Stop request failed";
+      setPhysicalStopMessage(`STOP REQUEST FAILED: ${message}`);
+      addLog("PHYSICAL STOP FAILED", message);
+    } finally {
+      setPhysicalStopBusy(false);
+      void fetchPhysicalMotionStatus();
     }
+  }, [physicalStopBusy, addLog, fetchPhysicalMotionStatus]);
 
-    if (command === "TURN_RIGHT") {
-      setSimulatedHeading(
-        (value) => value + 15
-      );
-    }
+  function explainPhysicalWalking(direction: string) {
+    const reason = physicalMotionError ||
+      (!physicalMotionStatus?.connected ? "The physical bridge is not connected." :
+       currentFsm !== 500 ? "The robot must first reach FSM 500." :
+       !physicalMotionStatus?.physical_motion_enabled ? "The backend has not enabled physical velocity commands." :
+       !physicalMotionStatus?.stop_verified ? "Independent physical stop verification is unavailable." :
+       !physicalMotionStatus?.armed ? "The physical motion controller is disarmed." :
+       "Physical movement has not been commissioned for this interface.");
+    setWalkingNotice(`${direction}: ${reason} No movement command was sent.`);
+    addLog(`PHYSICAL ${direction}`, reason);
+  }
 
-    addLog(
-      command,
-      "Simulation only. No physical command sent."
-    );
+  function selectWalkingMode(next: WalkingMode) {
+    if (next === walkingMode) return;
+    if (motionActive.current) void stopMotion();
+    setPhysicalStopMessage(null);
+    setWalkingNotice(null);
+    setWalkingMode(next);
+    addLog("WALKING MODE", next === "physical" ? "Physical monitoring selected; movement locked." : "Simulation selected.");
   }
 
   function recordSnapshot() {
@@ -786,8 +1014,8 @@ export default function RobotControlPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f5f6f5] px-6 py-8 text-[#292f33] lg:px-8">
-      <div className="mx-auto max-w-6xl space-y-6">
+    <main className="min-h-screen bg-[#f5f7f8] px-4 py-6 text-[#263238] lg:px-8 2xl:px-10">
+      <div className="mx-auto w-full max-w-none space-y-5">
 
         <header>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#7b8687]">
@@ -799,10 +1027,7 @@ export default function RobotControlPage() {
           </h1>
 
           <p className="mt-2 text-sm text-[#657078]">
-            Live robot monitoring, perception,
-            physical posture control,
-            guarded locomotion,
-            simulation and state recording.
+            Live monitoring and robot operations
           </p>
         </header>
 
@@ -826,7 +1051,7 @@ export default function RobotControlPage() {
 
                 <p className="mt-1 text-sm text-[#738080]">
                   {live
-                    ? `Live Unitree SDK status · ${
+                    ? `Updated · ${
                         status?.timestamp
                           ? new Date(
                               status.timestamp
@@ -960,7 +1185,7 @@ export default function RobotControlPage() {
 
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 lg:grid-cols-2">
 
             <CameraPreview />
 
@@ -970,7 +1195,7 @@ export default function RobotControlPage() {
 
         </section>
 
-        <div className="grid gap-5 lg:grid-cols-[1fr_340px]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.8fr)_minmax(320px,1fr)]">
 
           <div className="space-y-5">
 
@@ -1022,47 +1247,24 @@ export default function RobotControlPage() {
                     currentFsm ===
                       mode.sourceFsm;
 
-                  const buttonEnabled =
-                    isPhysicalControl &&
-                    live &&
-                    capabilityAvailable &&
-                    sourceGuard &&
-                    controlBusy === null;
+                                     // Buttons remain clickable to explain unavailable actions.
+                   // The backend remains the authority for physical FSM commands.
+                   const buttonEnabled =
+                     isPhysicalControl && controlBusy === null;
 
-                  let buttonText =
-                    "Physical Control Locked";
-
-                  if (controlBusy === mode.action) {
-                    buttonText =
-                      "Sending...";
-                  } else if (active) {
-                    buttonText =
-                      "Current Mode";
-                  } else if (!live) {
-                    buttonText =
-                      "G1 Offline";
-                  } else if (!capabilityAvailable) {
-                    buttonText =
-                      isLocomotion
-                        ? "Locomotion Locked"
-                        : "Physical Control Locked";
-                  } else if (!sourceGuard) {
-                    buttonText =
-                      `Requires FSM ${mode.sourceFsm}`;
-                  } else if (
-                    isLocomotion
-                  ) {
-                    buttonText =
-                      "Start Locomotion";
-                  } else {
-                    buttonText =
-                      "Activate Mode";
-                  }
+const buttonText =
+                    controlBusy === mode.action
+                      ? "Sending..."
+                      : isLocomotion
+                        ? "Start Locomotion"
+                        : mode.id === 1
+                          ? "Activate Damp"
+                          : "Stand Up";
 
                   return (
                     <div
                       key={mode.id}
-                      className={`rounded-xl border p-4 ${
+                      className={`rounded-xl border p-4 transition-colors ${
                         active
                           ? "border-[#00866a] bg-[#eef8f3]"
                           : "border-[#dfe5e1] bg-[#fafbfa]"
@@ -1089,10 +1291,7 @@ export default function RobotControlPage() {
                         {mode.name}
                       </p>
 
-                      <p className="mt-1 text-xs text-[#738080]">
-                        FSM {mode.id} ·{" "}
-                        {mode.description}
-                      </p>
+                      <p className="mt-1 text-xs text-[#738080]">FSM {mode.id}</p>
 
                       {isPhysicalControl ? (
                         <>
@@ -1120,29 +1319,13 @@ export default function RobotControlPage() {
                             {controlBusy ===
                             mode.action ? (
                               <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                            ) : buttonEnabled ? (
-                              <Power className="h-3.5 w-3.5" />
                             ) : (
-                              <LockKeyhole className="h-3.5 w-3.5" />
+                              <Power className="h-3.5 w-3.5" />
                             )}
 
                             {buttonText}
 
                           </button>
-
-                          {isLocomotion && (
-                            <p
-                              className={`mt-2 text-center text-[11px] ${
-                                locomotionReady
-                                  ? "text-[#00866a]"
-                                  : "text-[#738080]"
-                              }`}
-                            >
-                              {locomotionReady
-                                ? "Guard passed: FSM 4 → FSM 500"
-                                : "Requires physical FSM 4 and armed locomotion control"}
-                            </p>
-                          )}
                         </>
                       ) : (
                         <button
@@ -1151,7 +1334,7 @@ export default function RobotControlPage() {
                           className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-[#d8dcda] bg-white px-3 py-3 text-xs font-semibold text-[#738080] opacity-70"
                         >
                           <LockKeyhole className="h-3.5 w-3.5" />
-                          Physical Control Locked
+                          Sit Mode Unavailable
                         </button>
                       )}
 
@@ -1161,283 +1344,110 @@ export default function RobotControlPage() {
 
               </div>
 
-              <div className="mt-4 flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
-
-                <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700" />
-
-                <div className="text-xs leading-relaxed text-amber-900">
-
-                  <p>
-                    Physical posture and locomotion
-                    transitions require backend arming
-                    and operator confirmation.
-                  </p>
-
-                  <p className="mt-2">
-                    <strong>
-                      Locomotion is guarded:
-                    </strong>{" "}
-                    FSM 500 can only be requested
-                    when the physical G1 currently
-                    reports FSM 4.
-                  </p>
-
-                  <p className="mt-2">
-                    FSM 500 only selects the
-                    locomotion controller. No velocity,
-                    gait or walking command is sent by
-                    this page.
-                  </p>
-
-                </div>
-
-              </div>
-
-            </Panel>
+                           {controlNotice && <div role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{controlNotice}</div>}
+</Panel>
 
             <Panel>
-
-              <div className="flex items-center gap-3">
-
-                <Footprints className="h-6 w-6 text-[#00866a]" />
-
-                <div>
-
-                  <h2 className="text-xl font-bold">
-                    Walking Controls
-                  </h2>
-
-                  <p className="mt-1 text-sm text-[#738080]">
-                    Browser simulation · No physical movement
-                  </p>
-
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <Footprints className="h-6 w-6 text-[#00866a]" />
+                  <div>
+                    <h2 className="text-xl font-bold">Walking Controls</h2>
+                    <p className="mt-1 text-sm text-[#738080]">
+                      {walkingMode === "simulation"
+                        ? "Browser simulation · No physical movement"
+                        : "Physical G1 monitoring · Movement locked"}
+                    </p>
+                  </div>
                 </div>
-
+                <div className="flex rounded-xl border border-[#d8dfda] bg-[#f5f7f6] p-1" role="group" aria-label="Walking mode">
+                  <button type="button" onClick={() => selectWalkingMode("simulation")}
+                    aria-pressed={walkingMode === "simulation"}
+                    className={`rounded-lg px-4 py-2 text-sm font-semibold ${walkingMode === "simulation" ? "bg-white text-[#00866a] shadow-sm" : "text-[#738080]"}`}>
+                    Simulation
+                  </button>
+                  <button type="button" onClick={() => selectWalkingMode("physical")}
+                    aria-pressed={walkingMode === "physical"}
+                    className={`rounded-lg px-4 py-2 text-sm font-semibold ${walkingMode === "physical" ? "bg-white text-[#00866a] shadow-sm" : "text-[#738080]"}`}>
+                    Physical G1
+                  </button>
+                </div>
               </div>
 
-              <div className="mx-auto mt-7 grid max-w-sm grid-cols-3 gap-3">
-
-                <div />
-
-                <MotionButton
-                  label="Forward"
-                  icon={
-                    <ArrowUp className="h-6 w-6" />
-                  }
-                  onClick={() =>
-                    simulateMovement(
-                      "FORWARD"
-                    )
-                  }
-                />
-
-                <div />
-
-                <MotionButton
-                  label="Turn Left"
-                  icon={
-                    <RotateCcw className="h-6 w-6" />
-                  }
-                  onClick={() =>
-                    simulateMovement(
-                      "TURN_LEFT"
-                    )
-                  }
-                />
-
-                <MotionButton
-                  label="Sim Stop"
-                  icon={
-                    <Square className="h-6 w-6" />
-                  }
-                  onClick={() =>
-                    simulateMovement(
-                      "STOP"
-                    )
-                  }
-                  stop
-                />
-
-                <MotionButton
-                  label="Turn Right"
-                  icon={
-                    <RotateCw className="h-6 w-6" />
-                  }
-                  onClick={() =>
-                    simulateMovement(
-                      "TURN_RIGHT"
-                    )
-                  }
-                />
-
-                <div />
-
-                <MotionButton
-                  label="Backward"
-                  icon={
-                    <ArrowDown className="h-6 w-6" />
-                  }
-                  onClick={() =>
-                    simulateMovement(
-                      "BACKWARD"
-                    )
-                  }
-                />
-
-                <div />
-
-              </div>
-
-              <div className="mt-6 flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
-
-                <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700" />
-
-                <p className="text-sm text-amber-900">
-                  Walking buttons operate only in
-                  simulation. Sim Stop is not a physical
-                  robot stop or emergency stop.
-                </p>
-
-              </div>
-
+              {walkingMode === "simulation" ? (
+                <>
+                  <div className="mt-4 flex items-center justify-between text-xs">
+                    <span className={motionError ? "text-red-700" : "text-emerald-700"}>
+                      {motionError ? "Simulator unavailable" : motionStatus ? "Simulator connected" : "Connecting..."}
+                    </span>
+                    <span>{motionBusy ? "Command active" : motionStatus?.moving ? "Moving (simulated)" : "Stopped"}</span>
+                  </div>
+                  <div className="mx-auto mt-5 grid max-w-sm grid-cols-3 gap-3">
+                    <div />
+                    <MotionButton label="Forward" icon={<ArrowUp className="h-6 w-6" />} disabled={!motionStatus || !!motionError} onPress={() => startMotion("FORWARD")} onRelease={() => { if (motionActive.current) void stopMotion(); }} />
+                    <div />
+                    <MotionButton label="Turn Left" icon={<RotateCcw className="h-6 w-6" />} disabled={!motionStatus || !!motionError} onPress={() => startMotion("TURN_LEFT")} onRelease={() => { if (motionActive.current) void stopMotion(); }} />
+                    <MotionButton label="Sim Stop" icon={<Square className="h-6 w-6" />} onPress={() => void stopMotion()} onRelease={() => {}} stop />
+                    <MotionButton label="Turn Right" icon={<RotateCw className="h-6 w-6" />} disabled={!motionStatus || !!motionError} onPress={() => startMotion("TURN_RIGHT")} onRelease={() => { if (motionActive.current) void stopMotion(); }} />
+                    <div />
+                    <MotionButton label="Backward" icon={<ArrowDown className="h-6 w-6" />} disabled={!motionStatus || !!motionError} onPress={() => startMotion("BACKWARD")} onRelease={() => { if (motionActive.current) void stopMotion(); }} />
+                    <div />
+                  </div>
+                  <p className="mt-4 text-center text-xs text-[#667783]">Hold to move · Release to stop · Simulation only</p>
+                  {motionError && <p className="mt-2 text-center text-xs text-red-700">{motionError}</p>}
+                </>
+              ) : (
+                <>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {[
+                      ["Bridge", physicalMotionError ? "Unavailable" : physicalMotionStatus?.connected ? "Connected" : "Waiting"],
+                      ["FSM", physicalMotionStatus?.fsm_id?.toString() ?? "Unknown"],
+                      ["Controller", physicalMotionStatus?.mode ?? "Unavailable"],
+                      ["Arming", physicalMotionStatus?.armed ? "Armed" : "Disarmed"],
+                      ["LowState", physicalMotionStatus?.feedback?.feedback_fresh ? "Fresh" : "Unavailable"],
+                      ["Stop verification", physicalMotionStatus?.stop_verified ? "Verified" : "Not verified"],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-xl border border-[#dfe5e1] bg-[#fafbfa] p-3">
+                        <p className="text-xs text-[#738080]">{label}</p>
+                        <p className="mt-1 break-words text-sm font-semibold">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                    Physical velocity output is locked. FSM 500 means locomotion mode is selected, not that walking or stopping has been verified.
+                    {physicalMotionStatus?.fault_latched && <p className="mt-2 font-semibold">Bridge fault is latched.</p>}
+                    {physicalMotionStatus?.watchdog_triggered && <p className="mt-2 font-semibold">Motion watchdog triggered.</p>}
+                  </div>
+                  <div className="mx-auto mt-5 grid max-w-sm grid-cols-3 gap-3">
+                    <div />
+                    <MotionButton label="Forward" icon={<ArrowUp className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Forward")} onRelease={() => {}} />
+                    <div />
+                    <MotionButton label="Turn Left" icon={<RotateCcw className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Turn Left")} onRelease={() => {}} />
+                    <MotionButton label="Request Stop" icon={<Square className="h-6 w-6" />} disabled={physicalStopBusy || !physicalMotionStatus?.connected} onPress={() => void requestPhysicalStop()} onRelease={() => {}} stop />
+                    <MotionButton label="Turn Right" icon={<RotateCw className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Turn Right")} onRelease={() => {}} />
+                    <div />
+                    <MotionButton label="Backward" icon={<ArrowDown className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Backward")} onRelease={() => {}} />
+                    <div />
+                  </div>
+                  <p className="mt-4 text-center text-xs text-[#667783]">Direction commands disabled · Stop requests are not a verified emergency stop</p>
+                  {physicalMotionError && <p className="mt-3 text-center text-xs text-red-700">{physicalMotionError}</p>}
+                  {physicalStopMessage && <p role="status" className="mt-3 text-center text-sm font-semibold text-amber-800">{physicalStopMessage}</p>}
+                </>
+              )}
             </Panel>
 
           </div>
 
           <aside className="space-y-5">
-
             <Panel>
-
-              <div className="flex items-center gap-2">
-
-                <MapPin className="h-5 w-5 text-[#00866a]" />
-
-                <h2 className="text-lg font-bold">
-                  Record Robot State
-                </h2>
-
-              </div>
-
-              <p className="mt-3 text-sm text-[#738080]">
-                Save the current physical FSM
-                together with its robot timestamp.
-              </p>
-
-              <button
-                type="button"
-                disabled={!live}
-                onClick={
-                  recordSnapshot
-                }
-                className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-[#00866a] px-4 py-3 text-sm font-semibold text-white hover:bg-[#007457] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Save className="h-4 w-4" />
-                Record State
-              </button>
-
-              <button
-                type="button"
-                disabled={
-                  snapshots.length ===
-                  0
-                }
-                onClick={
-                  exportSnapshots
-                }
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#d8dcda] px-4 py-3 text-sm font-medium hover:bg-[#f5f7f6] disabled:opacity-40"
-              >
-                <Download className="h-4 w-4" />
-                Export JSON
-              </button>
-
-              <div className="mt-4 space-y-2">
-
-                {snapshots.length ===
-                0 ? (
-                  <p className="text-xs text-[#83908c]">
-                    No recorded states yet.
-                  </p>
-                ) : (
-                  snapshots.map(
-                    (item) => (
-                      <div
-                        key={item.id}
-                        className="rounded-lg border border-[#e3e8e5] p-3"
-                      >
-                        <p className="text-sm font-semibold">
-                          {item.name}
-                        </p>
-
-                        <p className="mt-1 text-xs text-[#738080]">
-                          FSM{" "}
-                          {item.fsm_id}{" "}
-                          ·{" "}
-                          {new Date(
-                            item.recorded_at
-                          ).toLocaleTimeString()}
-                        </p>
-                      </div>
-                    )
-                  )
-                )}
-
-              </div>
-
-              <p className="mt-4 text-xs text-[#83908c]">
-                Records currently contain FSM and
-                timestamps. Position and joint recording
-                will be added to the motion recorder later.
-              </p>
-
-            </Panel>
-
-            <Panel>
-
-              <h2 className="text-lg font-bold">
-                Simulation State
-              </h2>
-
-              <div className="mt-5 space-y-4 text-sm">
-
-                <div className="flex justify-between">
-
-                  <span className="text-[#738080]">
-                    Last Command
-                  </span>
-
-                  <span className="font-semibold">
-                    {lastCommand}
-                  </span>
-
-                </div>
-
-                <div className="flex justify-between">
-
-                  <span className="text-[#738080]">
-                    Simulated Steps
-                  </span>
-
-                  <span className="font-semibold">
-                    {simulatedSteps}
-                  </span>
-
-                </div>
-
-                <div className="flex justify-between">
-
-                  <span className="text-[#738080]">
-                    Simulated Heading
-                  </span>
-
-                  <span className="font-semibold">
-                    {simulatedHeading}°
-                  </span>
-
-                </div>
-
-              </div>
-
-            </Panel>
+<h2 className="text-lg font-bold">Simulation State</h2>
+<div className="mt-5 space-y-4 text-sm">
+  <div className="flex justify-between"><span>Last Command</span><strong>{lastCommand}</strong></div>
+  <div className="flex justify-between"><span>Velocity X</span><strong>{(motionStatus?.velocity?.[0] ?? 0).toFixed(2)} m/s</strong></div>
+  <div className="flex justify-between"><span>Velocity Y</span><strong>{(motionStatus?.velocity?.[1] ?? 0).toFixed(2)} m/s</strong></div>
+  <div className="flex justify-between"><span>Yaw rate</span><strong>{(motionStatus?.velocity?.[2] ?? 0).toFixed(2)} rad/s</strong></div>
+</div>
+</Panel>
 
             <Panel>
 
@@ -1546,17 +1556,6 @@ export default function RobotControlPage() {
                   </p>
 
                 </div>
-
-              </div>
-
-              <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3">
-
-                <p className="text-xs leading-relaxed text-blue-900">
-                  FSM 500 does not automatically mean
-                  walking. It selects the locomotion
-                  controller. Physical movement commands
-                  remain separate.
-                </p>
 
               </div>
 
