@@ -351,7 +351,7 @@ export default function RobotControlPage() {
   const [lastCommand, setLastCommand] =
     useState("None");
 
-  const [walkingMode, setWalkingMode] = useState<WalkingMode>("simulation");
+  const [walkingMode, setWalkingMode] = useState<WalkingMode>("physical");
   const [physicalMotionStatus, setPhysicalMotionStatus] =
     useState<PhysicalMotionBridgeStatus | null>(null);
   const [physicalMotionError, setPhysicalMotionError] = useState<string | null>(null);

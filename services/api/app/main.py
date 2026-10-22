@@ -8,6 +8,7 @@ from app.api.executions import router as executions_router
 from app.api.interaction import router as interaction_router
 from app.api.navigation import router as navigation_router
 from app.api.physical_robot import router as physical_robot_router
+from app.api.vision import router as vision_router
 from app.api.workflows import router as workflows_router
 from app.api.websocket import manager, router as websocket_router
 
@@ -16,6 +17,7 @@ from app.robot.mock_g1 import MockG1
 from app.services.demonstration_service import DemonstrationService
 from app.services.execution_service import execution_service
 from app.tasks.engine import TaskEngine
+from app.api.visitor_safety import router as visitor_safety_router
 
 
 async def handle_task_event(event: dict) -> None:
@@ -84,6 +86,10 @@ app.include_router(workflows_router)
 app.include_router(executions_router)
 app.include_router(interaction_router)
 app.include_router(physical_robot_router)
+app.include_router(visitor_safety_router)
+
+# G1 Vision API
+app.include_router(vision_router)
 
 
 @app.get("/api/health")

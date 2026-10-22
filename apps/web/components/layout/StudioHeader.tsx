@@ -25,6 +25,10 @@ const navigation = [
     href: "/studio/lidar",
   },
   {
+    label: "Robot Map",
+    href: "/studio/robot-map",
+  },
+  {
     label: "Interaction",
     href: "/studio/interaction",
   },
@@ -50,7 +54,7 @@ export default function StudioHeader() {
       return pathname === "/studio";
     }
 
-    return pathname.startsWith(href);
+    return pathname === href || pathname.startsWith(`${href}/`);
   }
 
   return (
@@ -127,11 +131,15 @@ export default function StudioHeader() {
         {/* ================================================= */}
 
         <nav
+          aria-label="G1 Studio navigation"
           className="
             ml-auto
             flex
             h-full
+            min-w-0
             items-stretch
+            overflow-x-auto
+            overflow-y-hidden
           "
         >
           {navigation.map((item) => {
@@ -141,11 +149,13 @@ export default function StudioHeader() {
               <Link
                 key={item.href}
                 href={item.href}
+                aria-current={active ? "page" : undefined}
                 className={`
                   group
                   relative
                   flex
                   h-full
+                  shrink-0
                   items-center
                   whitespace-nowrap
                   px-[18px]

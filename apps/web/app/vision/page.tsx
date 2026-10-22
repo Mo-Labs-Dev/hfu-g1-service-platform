@@ -1,5 +1,5 @@
-import PlaceholderPage from "@/components/common/PlaceholderPage";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <PlaceholderPage title="Vision" />;
+  redirect("/studio/vision");
 }

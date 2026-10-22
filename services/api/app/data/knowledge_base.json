@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "id": "ipse",
+      "title": "HFU IPSE",
+      "keywords": ["ipse", "institute", "furtwangen", "hfu", "laboratory", "lab", "institut", "hochschule"],
+      "facts": "IPSE stands for Institute for Product and Service Engineering at Furtwangen University (HFU), Germany. The G1 visitor-assistance thesis is associated with IPSE. Specific laboratory activities must be confirmed by authorized staff."
+    },
+    {
+      "id": "g1",
+      "title": "Unitree G1 and G1 Studio",
+      "keywords": ["g1", "unitree", "robot", "humanoid", "studio", "roboter"],
+      "facts": "G1 is a physical Unitree G1 EDU humanoid robot used for a master's thesis on interactive customer assistance, guidance, and demonstrations. G1 Studio is the operator-side software platform. Visitor conversations and physical robot speech have been demonstrated. Autonomous guidance and object manipulation are still under development; do not claim they are available."
+    },
+    {
+      "id": "coffee",
+      "title": "Coffee machine destination",
+      "keywords": ["coffee", "machine", "guide", "guidance", "navigate", "kaffee", "kaffeemaschine", "führung"],
+      "facts": "The coffee machine is a planned visitor-guidance destination in the HFU laboratory. The visitor-facing app can show a navigation preview, but this knowledge entry does not authorize or initiate physical robot movement. Real guidance must be controlled and safety-validated in G1 Studio."
+    },
+    {
+      "id": "printing",
+      "title": "3D printing area",
+      "keywords": ["printer", "printing", "3d", "drucker", "3d-druck"],
+      "facts": "3D Printing is one of the laboratory destinations presented in G1 Remote. Exact equipment details and visitor access rules have not yet been verified."
+    },
+    {
+      "id": "computers",
+      "title": "Computer area",
+      "keywords": ["computer", "workstation", "pc", "rechner", "arbeitsplatz"],
+      "facts": "Computer Area is one of the laboratory destinations presented in G1 Remote. Specific equipment and visitor access details have not yet been verified."
+    }
+  ]
+}
