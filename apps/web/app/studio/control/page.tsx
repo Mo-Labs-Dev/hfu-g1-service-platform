@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 
 import LidarPreview from "@/components/robot/LidarPreview";
+import G1Joystick from "@/components/robot/G1Joystick";
+import G1RotationJoystick from "@/components/robot/G1RotationJoystick";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -64,12 +66,21 @@ type PhysicalMotionBridgeStatus = {
   velocity_commands_available?: boolean;
   fault_latched?: boolean;
   watchdog_triggered?: boolean;
+  watchdog_stop_attempted?: boolean;
+  last_stop_sent?: boolean;
+  last_stop_error?: string | null;
+  last_stop_reason?: string | null;
+  last_stop_rpc_elapsed_ms?: number | null;
+  stop_verification_reason?: string | null;
   stop_verified?: boolean;
   velocity?: number[];
   feedback?: {
     feedback_fresh?: boolean;
     feedback_age_ms?: number | null;
+    odometry_fresh?: boolean;
+    stationary_observed_for_one_second?: boolean;
     measured_velocity?: number[] | null;
+    measured_yaw_speed?: number | null;
     stop_verified_by_feedback?: boolean;
   };
 };
@@ -1418,18 +1429,173 @@ const buttonText =
                     {physicalMotionStatus?.fault_latched && <p className="mt-2 font-semibold">Bridge fault is latched.</p>}
                     {physicalMotionStatus?.watchdog_triggered && <p className="mt-2 font-semibold">Motion watchdog triggered.</p>}
                   </div>
-                  <div className="mx-auto mt-5 grid max-w-sm grid-cols-3 gap-3">
-                    <div />
-                    <MotionButton label="Forward" icon={<ArrowUp className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Forward")} onRelease={() => {}} />
-                    <div />
-                    <MotionButton label="Turn Left" icon={<RotateCcw className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Turn Left")} onRelease={() => {}} />
-                    <MotionButton label="Request Stop" icon={<Square className="h-6 w-6" />} disabled={physicalStopBusy || !physicalMotionStatus?.connected} onPress={() => void requestPhysicalStop()} onRelease={() => {}} stop />
-                    <MotionButton label="Turn Right" icon={<RotateCw className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Turn Right")} onRelease={() => {}} />
-                    <div />
-                    <MotionButton label="Backward" icon={<ArrowDown className="h-6 w-6" />} onPress={() => explainPhysicalWalking("Backward")} onRelease={() => {}} />
-                    <div />
+                  <div className="mt-5 rounded-2xl border border-[#dce8e1] bg-white p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-base font-semibold text-[#294d3f]">
+                          Physical Safety Diagnostics
+                        </h3>
+                        <p className="mt-1 text-xs text-[#738080]">
+                          Read-only feedback from the physical G1 bridge
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                        Not safety-authorized
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {[
+                        {
+                          label: "SDK Stop",
+                          value: physicalMotionStatus?.last_stop_sent
+                            ? "Acknowledged"
+                            : "Not acknowledged",
+                          detail: physicalMotionStatus?.last_stop_error
+                            ?? "Acknowledgment is not physical verification",
+                        },
+                        {
+                          label: "Live Odometry",
+                          value: physicalMotionStatus?.feedback?.odometry_fresh
+                            ? "Fresh"
+                            : "Unavailable / stale",
+                          detail: "Robot-reported motion feedback",
+                        },
+                        {
+                          label: "Stationary Observation",
+                          value: physicalMotionStatus?.feedback?.stationary_observed_for_one_second
+                            ? "Observed"
+                            : "Not established",
+                          detail: "One-second observation, not a stop test",
+                        },
+                        {
+                          label: "Motion Watchdog",
+                          value: physicalMotionStatus?.watchdog_triggered
+                            ? "Triggered"
+                            : "No trigger reported",
+                          detail: physicalMotionStatus?.watchdog_stop_attempted
+                            ? "Software stop attempt recorded"
+                            : "Stop response not validated",
+                        },
+                        {
+                          label: "Physical Stop Verification",
+                          value: physicalMotionStatus?.stop_verified
+                            ? "Verified by bridge"
+                            : "Not verified",
+                          detail: "Requires supervised stop-response validation",
+                        },
+                        {
+                          label: "Independent Emergency Stop",
+                          value: "Not verified",
+                          detail: "Not established by this software dashboard",
+                        },
+                      ].map((item) => (
+                        <div
+                          key={item.label}
+                          className="rounded-xl border border-[#dfe8e2] bg-[#f8fbf9] p-4"
+                        >
+                          <p className="text-xs font-medium text-[#738080]">
+                            {item.label}
+                          </p>
+                          <p className="mt-2 text-sm font-semibold text-[#294d3f]">
+                            {item.value}
+                          </p>
+                          <p className="mt-2 text-xs text-[#738080]">
+                            {item.detail}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      {physicalMotionStatus?.stop_verification_reason
+                        ?? "Physical stop verification has not been established."}
+                    </div>
                   </div>
-                  <p className="mt-4 text-center text-xs text-[#667783]">Direction commands disabled · Stop requests are not a verified emergency stop</p>
+
+                  <div className="mt-5 rounded-2xl border border-[#dce8e1] bg-[#f7fbf8] p-5">
+                    <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-semibold text-[#294d3f]">
+                          Movement Joystick
+                        </h3>
+                        <p className="mt-1 text-xs text-[#738080]">
+                          Drag to preview direction
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                        Motion Locked
+                      </span>
+                    </div>
+
+                    <div
+                      role="status"
+                      className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#dce8e1] bg-white px-4 py-3"
+                    >
+                      <span className="text-xs font-medium text-[#738080]">
+                        Robot telemetry
+                      </span>
+                      <span className={`text-xs font-semibold ${
+                        physicalMotionError || !physicalMotionStatus?.connected
+                          ? "text-red-700"
+                          : physicalMotionStatus?.feedback?.feedback_fresh &&
+                              physicalMotionStatus?.feedback?.odometry_fresh
+                            ? "text-[#00866a]"
+                            : "text-amber-700"
+                      }`}>
+                        {physicalMotionError || !physicalMotionStatus?.connected
+                          ? "Disconnected"
+                          : physicalMotionStatus?.feedback?.feedback_fresh &&
+                              physicalMotionStatus?.feedback?.odometry_fresh
+                            ? "Live"
+                            : "Stale"}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                      <div className="flex items-center justify-center rounded-2xl border border-[#dce8e1] bg-white p-5">
+                        <G1Joystick label="Movement · X/Y" />
+                      </div>
+
+                      <div className="flex items-center justify-center rounded-2xl border border-[#dce8e1] bg-white p-5">
+                        <G1RotationJoystick />
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-3 gap-2">
+                      {[
+                        ["Velocity X", physicalMotionStatus?.feedback?.odometry_fresh ? physicalMotionStatus?.feedback?.measured_velocity?.[0] : null, "m/s"],
+                        ["Velocity Y", physicalMotionStatus?.feedback?.odometry_fresh ? physicalMotionStatus?.feedback?.measured_velocity?.[1] : null, "m/s"],
+                        ["Yaw rate", physicalMotionStatus?.feedback?.odometry_fresh ? physicalMotionStatus?.feedback?.measured_yaw_speed : null, "rad/s"],
+                      ].map(([label, value, unit]) => (
+                        <div
+                          key={String(label)}
+                          className="rounded-xl border border-[#dce8e1] bg-white p-3 text-center"
+                        >
+                          <p className="text-xs text-[#738080]">{label}</p>
+                          <p className="mt-2 text-sm font-semibold text-[#00866a]">
+                            {typeof value === "number" ? value.toFixed(3) : "—"} {unit}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void requestPhysicalStop()}
+                      disabled={physicalStopBusy || !physicalMotionStatus?.connected}
+                      className="mt-5 w-full rounded-xl border border-red-200 bg-red-50 px-4 py-4 text-sm font-bold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {physicalStopBusy
+                        ? "Sending Stop Request..."
+                        : "Request Software Stop"}
+                    </button>
+
+                    <p className="mt-3 text-center text-xs text-[#738080]">
+                      Visual-only joystick · No movement commands sent
+                      · Software stop is not an independent emergency stop
+                    </p>
+                  </div>
                   {physicalMotionError && <p className="mt-3 text-center text-xs text-red-700">{physicalMotionError}</p>}
                   {physicalStopMessage && <p role="status" className="mt-3 text-center text-sm font-semibold text-amber-800">{physicalStopMessage}</p>}
                 </>
