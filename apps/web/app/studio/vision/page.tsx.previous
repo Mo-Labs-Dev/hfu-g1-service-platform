@@ -1,0 +1,993 @@
+"use client";
+
+import {
+  ChangeEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+type Source = "offline" | "live" | "test-image";
+type Mode = "auto" | "manual" | "off";
+
+type Detection = {
+  label: string;
+  class_id: number;
+  confidence: number;
+  bbox: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
+};
+
+type DetectionResponse = {
+  status: string;
+  model: string;
+  image: { width: number; height: number };
+  count: number;
+  detections: Detection[];
+};
+
+type CameraStatus = {
+  camera_connected: boolean;
+  stream_available: boolean;
+  frames_received: number;
+  frame_age_seconds: number | null;
+  error: string | null;
+};
+
+type VisionStatus = {
+  status: string;
+  model: string;
+  object_detection: string;
+};
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://127.0.0.1:8000";
+
+function cameraBase() {
+  if (process.env.NEXT_PUBLIC_G1_CAMERA_URL) {
+    return process.env.NEXT_PUBLIC_G1_CAMERA_URL;
+  }
+
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:8770`;
+  }
+
+  return "http://127.0.0.1:8770";
+}
+
+export default function VisionPage() {
+  const [source, setSource] = useState<Source>("offline");
+  const [mode, setMode] = useState<Mode>("manual");
+  const [intervalSeconds, setIntervalSeconds] = useState(2);
+
+  const [cameraStatus, setCameraStatus] =
+    useState<CameraStatus | null>(null);
+
+  const [visionStatus, setVisionStatus] =
+    useState<VisionStatus | null>(null);
+
+  const [modelName, setModelName] =
+    useState("Not loaded");
+
+  const [testImage, setTestImage] =
+    useState<string | null>(null);
+
+  const [selectedFile, setSelectedFile] =
+    useState<File | null>(null);
+
+  const [analyzedImage, setAnalyzedImage] =
+    useState<string | null>(null);
+
+  const [detections, setDetections] =
+    useState<Detection[]>([]);
+
+  const [dimensions, setDimensions] =
+    useState<{ width: number; height: number } | null>(null);
+
+  const [detecting, setDetecting] = useState(false);
+  const [streamError, setStreamError] = useState(false);
+  const [streamKey, setStreamKey] = useState(0);
+  const [analysisCount, setAnalysisCount] = useState(0);
+
+  const [confidence, setConfidence] = useState(50);
+
+  const [message, setMessage] = useState(
+    "Checking G1 camera and Vision API..."
+  );
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const busyRef = useRef(false);
+  const requestRef = useRef<AbortController | null>(null);
+  const sourceRef = useRef<Source>("offline");
+  const modeRef = useRef<Mode>("manual");
+  const fileRef = useRef<File | null>(null);
+
+  const cameraConnected =
+    cameraStatus?.camera_connected === true;
+
+  const live = source === "live";
+  const autoActive = live && mode === "auto";
+
+  useEffect(() => {
+    sourceRef.current = source;
+    modeRef.current = mode;
+    fileRef.current = selectedFile;
+  }, [source, mode, selectedFile]);
+
+  const refreshCamera = useCallback(async () => {
+    try {
+      const response = await fetch(
+        `${cameraBase()}/status`,
+        {
+          cache: "no-store",
+          signal: AbortSignal.timeout(3000),
+        }
+      );
+
+      if (!response.ok) throw new Error("Camera unavailable");
+
+      const data: CameraStatus = await response.json();
+      setCameraStatus(data);
+    } catch {
+      setCameraStatus(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshCamera();
+
+    const timer = window.setInterval(
+      refreshCamera,
+      3000
+    );
+
+    return () => window.clearInterval(timer);
+  }, [refreshCamera]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadStatus() {
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/vision/status`,
+          { cache: "no-store" }
+        );
+
+        if (!response.ok) throw new Error();
+
+        const data: VisionStatus =
+          await response.json();
+
+        if (active) {
+          setVisionStatus(data);
+          setModelName(data.model);
+        }
+      } catch {
+        if (active) setVisionStatus(null);
+      }
+    }
+
+    loadStatus();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      requestRef.current?.abort();
+    };
+  }, []);
+
+  function clearResults() {
+    setAnalyzedImage(null);
+    setDetections([]);
+    setDimensions(null);
+    setAnalysisCount(0);
+  }
+
+  function connectCamera() {
+    if (!cameraConnected) {
+      setMessage("Camera bridge is not connected.");
+      return;
+    }
+
+    requestRef.current?.abort();
+    setSource("live");
+    setMode("manual");
+    setTestImage(null);
+    setSelectedFile(null);
+    clearResults();
+    setStreamError(false);
+    setStreamKey((value) => value + 1);
+    setMessage("G1 camera connected. Select Auto to start AI detection.");
+  }
+
+  function disconnectCamera() {
+    requestRef.current?.abort();
+    setSource("offline");
+    setMode("off");
+    setStreamError(false);
+    clearResults();
+    setMessage("Camera preview disconnected.");
+  }
+
+  function handleUpload(
+    event: ChangeEvent<HTMLInputElement>
+  ) {
+    const file = event.target.files?.[0];
+
+    if (!file) return;
+
+    if (
+      !["image/jpeg", "image/png", "image/webp"].includes(
+        file.type
+      ) ||
+      file.size > 10 * 1024 * 1024
+    ) {
+      setMessage("Choose a JPEG, PNG or WebP under 10 MB.");
+      event.target.value = "";
+      return;
+    }
+
+    requestRef.current?.abort();
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      setSource("test-image");
+      setMode("manual");
+      setSelectedFile(file);
+      setTestImage(String(reader.result));
+      clearResults();
+      setMessage("Test image loaded. Click Detect Now.");
+    };
+
+    reader.onerror = () =>
+      setMessage("Unable to load test image.");
+
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  }
+
+  const runDetection = useCallback(async () => {
+    if (busyRef.current || modeRef.current === "off") {
+      return;
+    }
+
+    const currentSource = sourceRef.current;
+
+    if (currentSource === "offline") return;
+
+    busyRef.current = true;
+    setDetecting(true);
+
+    const controller = new AbortController();
+    requestRef.current = controller;
+
+    let temporaryUrl: string | null = null;
+
+    try {
+      let file: File;
+      let previewUrl: string;
+
+      if (currentSource === "test-image") {
+        const selected = fileRef.current;
+        if (!selected) throw new Error("No test image selected");
+
+        file = selected;
+        previewUrl = URL.createObjectURL(selected);
+        temporaryUrl = previewUrl;
+      } else {
+        const snapshot = await fetch(
+          `${cameraBase()}/snapshot`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          }
+        );
+
+        if (!snapshot.ok) {
+          throw new Error(
+            `Camera snapshot HTTP ${snapshot.status}`
+          );
+        }
+
+        const blob = await snapshot.blob();
+
+        if (!blob.type.includes("jpeg")) {
+          throw new Error("Invalid camera JPEG");
+        }
+
+        file = new File(
+          [blob],
+          "g1-live-frame.jpg",
+          { type: "image/jpeg" }
+        );
+
+        previewUrl = URL.createObjectURL(blob);
+        temporaryUrl = previewUrl;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(
+        `${API_BASE}/api/vision/detect`,
+        {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        }
+      );
+
+      if (!response.ok) {
+        let detail = `Detection HTTP ${response.status}`;
+
+        try {
+          const error = await response.json();
+          if (typeof error.detail === "string") {
+            detail = error.detail;
+          }
+        } catch {
+          // Keep HTTP status.
+        }
+
+        throw new Error(detail);
+      }
+
+      const result: DetectionResponse =
+        await response.json();
+
+      if (controller.signal.aborted) return;
+
+      setAnalyzedImage((previous) => {
+        if (previous?.startsWith("blob:")) {
+          URL.revokeObjectURL(previous);
+        }
+        return previewUrl;
+      });
+
+      temporaryUrl = null;
+      setDetections(result.detections);
+      setDimensions(result.image);
+      setModelName(result.model);
+      setAnalysisCount((value) => value + 1);
+
+      setMessage(
+        `AI analysis completed: ${result.count} objects detected.`
+      );
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setMessage(
+          error instanceof Error
+            ? `Detection error: ${error.message}`
+            : "Detection failed."
+        );
+      }
+    } finally {
+      if (temporaryUrl) URL.revokeObjectURL(temporaryUrl);
+
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+      }
+
+      busyRef.current = false;
+      setDetecting(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!autoActive || !cameraConnected || streamError) {
+      return;
+    }
+
+    void runDetection();
+
+    const timer = window.setInterval(
+      () => void runDetection(),
+      intervalSeconds * 1000
+    );
+
+    return () => window.clearInterval(timer);
+  }, [
+    autoActive,
+    cameraConnected,
+    streamError,
+    intervalSeconds,
+    runDetection,
+  ]);
+
+  function changeMode(next: Mode) {
+    requestRef.current?.abort();
+    setMode(next);
+
+    if (next === "off") {
+      clearResults();
+      setMessage("AI detection disabled.");
+    } else if (next === "auto") {
+      setMessage("Automatic AI detection enabled.");
+    } else {
+      setMessage("Manual detection enabled.");
+    }
+  }
+
+  async function saveSnapshot() {
+    try {
+      let blob: Blob;
+      let filename: string;
+
+      if (source === "live") {
+        const response = await fetch(
+          `${cameraBase()}/snapshot`,
+          { cache: "no-store" }
+        );
+
+        if (!response.ok) {
+          throw new Error("Camera snapshot unavailable");
+        }
+
+        blob = await response.blob();
+        filename = `g1-camera-${Date.now()}.jpg`;
+      } else if (selectedFile) {
+        blob = selectedFile;
+        filename = `g1-test-${Date.now()}.jpg`;
+      } else {
+        throw new Error("No image available");
+      }
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.setTimeout(
+        () => URL.revokeObjectURL(url),
+        1000
+      );
+
+      setMessage("Snapshot saved.");
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Snapshot failed."
+      );
+    }
+  }
+
+  const filtered = detections.filter(
+    (item) => item.confidence * 100 >= confidence
+  );
+
+  const counts = filtered.reduce<Record<string, number>>(
+    (result, item) => {
+      result[item.label] = (result[item.label] || 0) + 1;
+      return result;
+    },
+    {}
+  );
+
+  const peopleCount = filtered.filter(
+    (item) => item.label.toLowerCase() === "person"
+  ).length;
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <header className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-semibold">
+              G1 Vision
+            </h1>
+            <p className="mt-1 text-sm text-slate-500">
+              IPSE · AI Visual Perception &amp; Object Recognition
+            </p>
+          </div>
+
+          <span
+            className={`rounded-full px-4 py-2 text-sm font-medium ${
+              cameraConnected
+                ? "bg-emerald-100 text-emerald-800"
+                : "bg-amber-100 text-amber-800"
+            }`}
+          >
+            {cameraConnected
+              ? "● Physical Camera Connected"
+              : "● Camera Offline"}
+          </span>
+        </header>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Metric
+            label="People Detected"
+            value={String(peopleCount)}
+            icon="👤"
+          />
+          <Metric
+            label="Visible Objects"
+            value={String(filtered.length)}
+            icon="🎯"
+          />
+          <Metric
+            label="AI Analyses"
+            value={String(analysisCount)}
+            icon="🧠"
+          />
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-3">
+          <section className="space-y-5 lg:col-span-2">
+            <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              <div className="flex items-center justify-between p-4">
+                <h2 className="font-semibold">
+                  G1 Head Camera
+                </h2>
+                <span className="text-xs text-slate-500">
+                  1920 × 1080 · Unitree SDK2
+                </span>
+              </div>
+
+              <div className="relative flex aspect-video items-center justify-center overflow-hidden bg-slate-950">
+                {live ? (
+                  <>
+                    <img
+                      key={streamKey}
+                      src={`${cameraBase()}/stream?session=${streamKey}`}
+                      alt="Live G1 camera"
+                      className="h-full w-full object-contain"
+                      onError={() => {
+                        setStreamError(true);
+                        setMessage("Camera stream interrupted.");
+                      }}
+                      onLoad={() => setStreamError(false)}
+                    />
+
+                    <span className="absolute left-4 top-4 rounded-md bg-red-600 px-3 py-1 text-xs font-semibold text-white">
+                      ● LIVE
+                    </span>
+
+                    {streamError && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-slate-950/90 p-6 text-white">
+                        Camera stream unavailable
+                      </div>
+                    )}
+                  </>
+                ) : testImage && source === "test-image" ? (
+                  <img
+                    src={testImage}
+                    alt="Uploaded test image"
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <div className="text-center text-slate-400">
+                    <div className="text-5xl">📷</div>
+                    <p className="mt-4 font-medium">
+                      {cameraConnected
+                        ? "G1 Camera Ready"
+                        : "Camera Bridge Unavailable"}
+                    </p>
+                    <p className="mt-2 text-sm">
+                      Connect Camera to start the live feed.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-3 p-4">
+                {!live ? (
+                  <button
+                    onClick={connectCamera}
+                    disabled={!cameraConnected}
+                    className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+                  >
+                    Connect Camera
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={disconnectCamera}
+                      className="rounded-lg bg-red-700 px-4 py-2 text-sm font-medium text-white"
+                    >
+                      Disconnect
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setStreamError(false);
+                        setStreamKey((value) => value + 1);
+                      }}
+                      className="rounded-lg border px-4 py-2 text-sm"
+                    >
+                      Refresh Stream
+                    </button>
+                  </>
+                )}
+
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-lg border px-4 py-2 text-sm"
+                >
+                  Load Test Image
+                </button>
+
+                <button
+                  onClick={saveSnapshot}
+                  disabled={source === "offline"}
+                  className="rounded-lg border px-4 py-2 text-sm disabled:opacity-40"
+                >
+                  Save Snapshot
+                </button>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={handleUpload}
+                  className="hidden"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-5 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold">
+                    AI Object Detection
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Analyze live camera frames using YOLO.
+                  </p>
+                </div>
+
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    autoActive
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  {autoActive
+                    ? "● AUTO ACTIVE"
+                    : detecting
+                      ? "Analyzing"
+                      : "AI Standby"}
+                </span>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-2">
+                {(["auto", "manual", "off"] as Mode[]).map(
+                  (option) => (
+                    <button
+                      key={option}
+                      onClick={() => changeMode(option)}
+                      disabled={
+                        option === "auto" && !live
+                      }
+                      className={`rounded-lg px-5 py-2 text-sm font-medium capitalize disabled:opacity-40 ${
+                        mode === option
+                          ? "bg-emerald-700 text-white"
+                          : "bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      {option}
+                    </button>
+                  )
+                )}
+
+                <button
+                  onClick={() => void runDetection()}
+                  disabled={
+                    detecting ||
+                    mode !== "manual" ||
+                    source === "offline"
+                  }
+                  className="rounded-lg bg-blue-700 px-5 py-2 text-sm font-medium text-white disabled:opacity-40"
+                >
+                  {detecting ? "Analyzing..." : "Detect Now"}
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium">
+                    Detection Interval
+                  </label>
+                  <select
+                    value={intervalSeconds}
+                    onChange={(event) =>
+                      setIntervalSeconds(Number(event.target.value))
+                    }
+                    className="mt-2 w-full rounded-lg border p-2 text-sm"
+                  >
+                    <option value={1}>Every 1 second</option>
+                    <option value={2}>Every 2 seconds</option>
+                    <option value={3}>Every 3 seconds</option>
+                    <option value={5}>Every 5 seconds</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium">
+                    Display Confidence: {confidence}%
+                  </label>
+                  <input
+                    type="range"
+                    min={10}
+                    max={95}
+                    step={5}
+                    value={confidence}
+                    onChange={(event) =>
+                      setConfidence(Number(event.target.value))
+                    }
+                    className="mt-4 w-full accent-emerald-700"
+                  />
+                </div>
+              </div>
+
+              <p className="mt-4 text-xs text-slate-500">
+                Confidence filters displayed results only.
+                Automatic detection analyzes one captured frame
+                at a time. It does not control robot movement.
+              </p>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              <div className="flex items-center justify-between p-4">
+                <div>
+                  <h2 className="font-semibold">
+                    AI Analyzed Frame
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Bounding boxes are aligned to the exact
+                    image analyzed by YOLO.
+                  </p>
+                </div>
+
+                {detecting && (
+                  <span className="text-xs text-blue-700">
+                    Processing...
+                  </span>
+                )}
+              </div>
+
+              <div className="relative flex aspect-video items-center justify-center bg-slate-950">
+                {analyzedImage ? (
+                  <div className="relative h-full w-full">
+                    <img
+                      src={analyzedImage}
+                      alt="Analyzed camera frame"
+                      className="h-full w-full object-contain"
+                    />
+
+                    {dimensions && (
+                      <svg
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                        viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+                        preserveAspectRatio="xMidYMid meet"
+                      >
+                        {filtered.map((item, index) => {
+                          const { x1, y1, x2, y2 } = item.bbox;
+
+                          return (
+                            <g key={index}>
+                              <rect
+                                x={x1}
+                                y={y1}
+                                width={Math.max(0, x2 - x1)}
+                                height={Math.max(0, y2 - y1)}
+                                fill="none"
+                                stroke="#22c55e"
+                                strokeWidth="3"
+                              />
+
+                              <rect
+                                x={x1}
+                                y={Math.max(0, y1 - 26)}
+                                width={Math.min(
+                                  230,
+                                  Math.max(100, item.label.length * 13)
+                                )}
+                                height="26"
+                                fill="#15803d"
+                              />
+
+                              <text
+                                x={x1 + 5}
+                                y={Math.max(20, y1 - 7)}
+                                fill="white"
+                                fontSize="18"
+                                fontWeight="bold"
+                              >
+                                {item.label}{" "}
+                                {Math.round(
+                                  item.confidence * 100
+                                )}%
+                              </text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center text-sm text-slate-400">
+                    <div className="text-4xl">🎯</div>
+                    <p className="mt-3">
+                      Waiting for AI analysis
+                    </p>
+                    <p className="mt-1 text-xs">
+                      Select Auto or click Detect Now.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div
+              role="status"
+              className="rounded-xl border bg-white p-4 text-sm text-slate-600"
+            >
+              {message}
+            </div>
+          </section>
+
+          <aside className="space-y-6">
+            <div className="rounded-2xl border bg-white p-5 shadow-sm">
+              <h2 className="font-semibold">Vision Status</h2>
+
+              <div className="mt-5 space-y-4 text-sm">
+                <StatusRow
+                  label="Physical Camera"
+                  value={cameraConnected ? "Connected" : "Offline"}
+                />
+                <StatusRow
+                  label="Camera Preview"
+                  value={
+                    live
+                      ? streamError
+                        ? "Error"
+                        : "Live"
+                      : source === "test-image"
+                        ? "Test Image"
+                        : "Disconnected"
+                  }
+                />
+                <StatusRow
+                  label="Vision API"
+                  value={visionStatus ? "Connected" : "Unavailable"}
+                />
+                <StatusRow
+                  label="YOLO Model"
+                  value={modelName}
+                />
+                <StatusRow
+                  label="AI Mode"
+                  value={mode.toUpperCase()}
+                />
+                <StatusRow
+                  label="SDK Frames"
+                  value={String(cameraStatus?.frames_received ?? 0)}
+                />
+                <StatusRow
+                  label="AI Analyses"
+                  value={String(analysisCount)}
+                />
+                <StatusRow
+                  label="Physical Walking"
+                  value="Locked"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-5 shadow-sm">
+              <h2 className="font-semibold">
+                Detected Objects
+              </h2>
+
+              <p className="mt-2 text-sm text-slate-500">
+                Latest analyzed frame
+              </p>
+
+              {Object.keys(counts).length === 0 ? (
+                <div className="mt-5 rounded-lg bg-slate-50 p-5 text-center text-sm text-slate-500">
+                  No objects detected
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {Object.entries(counts).map(
+                    ([label, count]) => (
+                      <div
+                        key={label}
+                        className="flex items-center justify-between rounded-lg border p-3"
+                      >
+                        <span className="font-medium capitalize">
+                          {label}
+                        </span>
+                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-800">
+                          {count}
+                        </span>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border bg-white p-5 shadow-sm">
+              <h2 className="font-semibold">
+                Thesis Use Cases
+              </h2>
+
+              <div className="mt-4 space-y-3 text-sm text-slate-600">
+                <p>👤 Visitor presence detection</p>
+                <p>☕ Coffee machine recognition</p>
+                <p>🖨️ 3D printer identification</p>
+                <p>📦 Component recognition</p>
+                <p>🤖 Autonomous demonstration perception</p>
+              </div>
+
+              <p className="mt-4 text-xs text-slate-400">
+                Custom lab-object recognition may require
+                additional model training.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon: string;
+}) {
+  return (
+    <div className="rounded-2xl border bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-slate-500">
+          {label}
+        </span>
+        <span className="text-2xl">{icon}</span>
+      </div>
+      <p className="mt-3 text-3xl font-semibold">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function StatusRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-right font-medium">
+        {value}
+      </span>
+    </div>
+  );
+}

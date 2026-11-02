@@ -21,6 +21,14 @@ const navigation = [
     href: "/studio/vision",
   },
   {
+    label: "LiDAR",
+    href: "/studio/lidar",
+  },
+  {
+    label: "Robot Map",
+    href: "/studio/robot-map",
+  },
+  {
     label: "Interaction",
     href: "/studio/interaction",
   },
@@ -46,7 +54,7 @@ export default function StudioHeader() {
       return pathname === "/studio";
     }
 
-    return pathname.startsWith(href);
+    return pathname === href || pathname.startsWith(`${href}/`);
   }
 
   return (
@@ -62,7 +70,6 @@ export default function StudioHeader() {
         bg-[#d7d8d6]
       "
     >
-
       <div
         className="
           mx-auto
@@ -74,13 +81,11 @@ export default function StudioHeader() {
           px-8
         "
       >
-
         {/* ================================================= */}
         {/* BRAND */}
         {/* ================================================= */}
 
         <div className="flex shrink-0 items-center">
-
           <Link
             href="/"
             className="flex shrink-0 items-center"
@@ -92,12 +97,9 @@ export default function StudioHeader() {
             />
           </Link>
 
-
           <div className="mx-6 h-[52px] w-px bg-[#b6bab8]" />
 
-
           <div className="flex flex-col justify-center">
-
             <Link
               href="/studio"
               className="
@@ -121,25 +123,25 @@ export default function StudioHeader() {
             >
               Engineering Platform
             </p>
-
           </div>
-
         </div>
-
 
         {/* ================================================= */}
         {/* PLATFORM NAVIGATION */}
         {/* ================================================= */}
 
         <nav
+          aria-label="G1 Studio navigation"
           className="
             ml-auto
             flex
             h-full
+            min-w-0
             items-stretch
+            overflow-x-auto
+            overflow-y-hidden
           "
         >
-
           {navigation.map((item) => {
             const active = isActive(item.href);
 
@@ -147,11 +149,13 @@ export default function StudioHeader() {
               <Link
                 key={item.href}
                 href={item.href}
+                aria-current={active ? "page" : undefined}
                 className={`
                   group
                   relative
                   flex
                   h-full
+                  shrink-0
                   items-center
                   whitespace-nowrap
                   px-[18px]
@@ -167,7 +171,6 @@ export default function StudioHeader() {
                   }
                 `}
               >
-
                 {item.label}
 
                 <span
@@ -187,13 +190,10 @@ export default function StudioHeader() {
                     }
                   `}
                 />
-
               </Link>
             );
           })}
-
         </nav>
-
 
         {/* ================================================= */}
         {/* USER */}
@@ -210,12 +210,10 @@ export default function StudioHeader() {
             pl-6
           "
         >
-
           <button
             type="button"
             className="group flex items-center gap-3"
           >
-
             <div
               className="
                 flex
@@ -239,13 +237,9 @@ export default function StudioHeader() {
             <span className="text-[10px] text-[#50595e]">
               ▼
             </span>
-
           </button>
-
         </div>
-
       </div>
-
     </header>
   );
 }

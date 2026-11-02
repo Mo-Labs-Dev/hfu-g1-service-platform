@@ -1,0 +1,476 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.database import AsyncSessionLocal
+from app.models.task import RobotTask, TaskStep
+from app.models.workflow import WorkflowWrite
+from app.services.workflow_service import workflow_service
+from app.tasks.engine import TaskBusyError
+
+
+
+router = APIRouter(
+    prefix="/api/visitor-guidance",
+    tags=["Visitor Guidance"],
+)
+
+COFFEE_WORKFLOW_ID = (
+    "c1756c95-3f65-4adc-b19d-c4711e27daae"
+)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class GuidanceStartRequest(BaseModel):
+    destination: str = Field(
+        default="coffee_machine",
+        min_length=1,
+        max_length=100,
+    )
+
+
+class WorkflowGuidanceService:
+    """
+    Visitor guidance backed by the existing Task Engine.
+
+    Workflow speech uses the configured robot adapter.
+    Navigation remains simulated by HybridG1.
+
+    No physical locomotion commands are issued here.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._task_id: str | None = None
+
+    @staticmethod
+    def _idle_state() -> dict:
+        return {
+            "session_id": None,
+            "destination": None,
+            "destination_name": None,
+            "mode": "simulation",
+            "state": "idle",
+            "progress": 0,
+            "message": "No guidance session is active.",
+            "active": False,
+            "started_at": None,
+            "updated_at": utc_now(),
+            "completed_at": None,
+            "physical_motion_requested": False,
+            "workflow_id": COFFEE_WORKFLOW_ID,
+            "steps": [],
+        }
+
+    @staticmethod
+    def _convert_execution(execution: dict) -> dict:
+        steps = execution.get("steps", [])
+        total = len(steps)
+
+        completed = sum(
+            1
+            for step in steps
+            if step["status"] == "completed"
+        )
+
+        progress = (
+            round(completed * 100 / total)
+            if total
+            else 0
+        )
+
+        status = execution["status"]
+
+        current_step = next(
+            (
+                step
+                for step in steps
+                if step["status"] == "running"
+            ),
+            None,
+        )
+
+        if current_step is None:
+            current_step = next(
+                (
+                    step
+                    for step in steps
+                    if step["status"] == "pending"
+                ),
+                None,
+            )
+
+        state = "preparing"
+        message = "Preparing visitor guidance."
+
+        if status == "pending":
+            state = "preparing"
+            message = "Waiting for workflow execution."
+
+        elif status == "running":
+            if current_step is not None:
+                action = current_step["action"]
+                name = current_step["name"]
+
+                if action == "navigate":
+                    state = "navigating"
+                    message = (
+                        f"{name} — simulated navigation."
+                    )
+                elif action == "speak":
+                    state = (
+                        "arriving"
+                        if completed >= 2
+                        else "preparing"
+                    )
+                    message = (
+                        f"{name} — sending speech to G1."
+                    )
+                else:
+                    state = "departing"
+                    message = name
+            else:
+                state = "arriving"
+                message = "Finishing workflow."
+
+        elif status == "completed":
+            state = "completed"
+            progress = 100
+            message = (
+                "Coffee Machine workflow completed. "
+                "Navigation was simulated."
+            )
+
+        elif status == "cancelled":
+            state = "cancelled"
+            message = "Guidance workflow cancelled."
+
+        elif status == "failed":
+            state = "failed"
+            message = (
+                execution.get("error")
+                or "Guidance workflow failed."
+            )
+
+        else:
+            state = "preparing"
+            message = f"Workflow status: {status}"
+
+        finished_at = execution.get("finished_at")
+
+        return {
+            "session_id": execution["id"],
+            "destination": "coffee_machine",
+            "destination_name": "Coffee Machine",
+            "mode": "simulation",
+            "state": state,
+            "progress": progress,
+            "message": message,
+            "active": status in ("pending", "running"),
+            "started_at": execution.get("started_at"),
+            "updated_at": utc_now(),
+            "completed_at": finished_at,
+            "physical_motion_requested": False,
+            "workflow_id": COFFEE_WORKFLOW_ID,
+            "steps": [
+                {
+                    "id": step["id"],
+                    "name": step["name"],
+                    "action": step["action"],
+                    "status": step["status"],
+                }
+                for step in steps
+            ],
+        }
+
+    async def status(self, request: Request) -> dict:
+        task_id = self._task_id
+
+        if task_id is None:
+            return self._idle_state()
+
+        execution_service = (
+            request.app.state.execution_service
+        )
+
+        execution = await execution_service.get_execution(
+            task_id
+        )
+
+        if execution is None:
+            return self._idle_state()
+
+        result = self._convert_execution(execution)
+
+        engine = request.app.state.task_engine
+
+        if (
+            engine.cancel_requested
+            and engine.is_busy
+            and engine.current_task is not None
+            and engine.current_task.id == task_id
+            and result["active"]
+        ):
+            result["message"] = (
+                "Cancellation requested. "
+                "Waiting for the current action to finish."
+            )
+
+        return result
+
+    async def start(
+        self,
+        request: Request,
+        destination: str,
+    ) -> dict:
+        normalized = (
+            destination.strip()
+            .lower()
+            .replace("-", "_")
+        )
+
+        if normalized != "coffee_machine":
+            raise ValueError(
+                "Only coffee_machine is supported."
+            )
+
+        async with self._lock:
+            engine = request.app.state.task_engine
+            robot = request.app.state.robot
+            execution_service = (
+                request.app.state.execution_service
+            )
+
+            if robot.mode != "simulation":
+                raise RuntimeError(
+                    "Guidance requires simulation mode."
+                )
+
+            if engine.is_busy:
+                raise RuntimeError(
+                    "Another robot task is already running."
+                )
+
+            async with AsyncSessionLocal() as db:
+                workflow = (
+                    await workflow_service.get_workflow(
+                        db,
+                        COFFEE_WORKFLOW_ID,
+                    )
+                )
+
+            if workflow is None:
+                raise LookupError(
+                    "Coffee Machine workflow not found."
+                )
+
+            validated = WorkflowWrite.model_validate(
+                workflow
+            )
+
+            if not validated.steps:
+                raise ValueError(
+                    "The guidance workflow has no steps."
+                )
+
+            # Keep the visitor-facing endpoint restricted
+            # to this known, simulation-only tour.
+            for step in validated.steps:
+                if step.action.value not in {
+                    "speak",
+                    "navigate",
+                    "wait",
+                }:
+                    raise ValueError(
+                        "Guidance contains an unsupported "
+                        f"action: {step.action.value}"
+                    )
+
+                if (
+                    step.action.value == "navigate"
+                    and step.parameters.get(
+                        "location_id"
+                    ) != "coffee_machine"
+                ):
+                    raise ValueError(
+                        "Guidance contains an unexpected "
+                        "navigation destination."
+                    )
+
+            task = RobotTask(
+                id=f"workflow-{uuid4()}",
+                name=validated.name,
+                description=validated.description,
+                steps=[
+                    TaskStep(
+                        id=str(uuid4()),
+                        name=step.name,
+                        action=step.action,
+                        parameters=step.parameters.copy(),
+                    )
+                    for step in validated.steps
+                ],
+            )
+
+            await execution_service.create_execution(
+                task=task,
+                workflow_id=COFFEE_WORKFLOW_ID,
+                workflow_snapshot=workflow,
+            )
+
+            try:
+                engine.start(task)
+
+            except (TaskBusyError, ValueError) as error:
+                await execution_service.delete_execution(
+                    task.id
+                )
+                raise RuntimeError(
+                    str(error)
+                ) from error
+
+            self._task_id = task.id
+
+        return await self.status(request)
+
+    async def cancel(self, request: Request) -> dict:
+        async with self._lock:
+            if self._task_id is None:
+                raise RuntimeError(
+                    "No guidance session exists."
+                )
+
+            engine = request.app.state.task_engine
+
+            current = engine.get_current_task()
+
+            if (
+                not engine.is_busy
+                or current is None
+                or current.id != self._task_id
+            ):
+                raise RuntimeError(
+                    "No active guidance session to cancel."
+                )
+
+            await engine.cancel()
+
+        return await self.status(request)
+
+    async def shutdown(self) -> None:
+        # Task Engine owns execution lifecycle.
+        # No separate timer or background task exists.
+        return None
+
+
+guidance_service = WorkflowGuidanceService()
+
+
+@router.get("/status")
+async def get_guidance_status(request: Request):
+    return await guidance_service.status(request)
+
+
+@router.post("/start")
+async def start_guidance(
+    payload: GuidanceStartRequest,
+    request: Request,
+):
+    try:
+        return await guidance_service.start(
+            request,
+            payload.destination,
+        )
+
+    except LookupError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        ) from error
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
+
+
+@router.post("/cancel")
+async def cancel_guidance(request: Request):
+    try:
+        return await guidance_service.cancel(
+            request
+        )
+
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
+
+class VoiceGuidanceRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    safety_session_id: str | None = None
+
+
+def is_coffee_guidance_request(text: str) -> bool:
+    value = " ".join(text.casefold().split())
+    coffee = any(word in value for word in (
+        "coffee machine", "coffee maker", "kaffeemaschine", "kaffeeautomat"
+    ))
+    guidance = any(word in value for word in (
+        "guide", "take me", "show me", "lead me", "bring me", "walk me",
+        "bring mich", "führ mich", "fuehr mich", "zeig mir", "begleite mich"
+    ))
+    return coffee and guidance
+
+
+@router.post("/voice-request")
+async def voice_guidance(payload: VoiceGuidanceRequest, request: Request):
+    if not is_coffee_guidance_request(payload.text):
+        raise HTTPException(status_code=422, detail="Not a coffee-machine guidance request")
+
+    if not payload.safety_session_id:
+        return {"accepted": False, "reason": "safety_session_required",
+                "answer": "Before I can guide you, please complete the visitor safety briefing."}
+
+    try:
+        eligibility = tour_eligibility(payload.safety_session_id)
+    except HTTPException:
+        return {"accepted": False, "reason": "invalid_safety_session",
+                "answer": "Your visitor safety session is not valid. Please complete the briefing again."}
+
+    if not eligibility["eligible_for_tour_request"]:
+        reason = eligibility["reason"]
+        answer = (
+            "Please complete the visitor safety briefing first."
+            if reason == "safety_acknowledgement_required"
+            else "The laboratory safety briefing is awaiting supervisor approval. "
+                 "I cannot start visitor guidance yet."
+        )
+        return {"accepted": False, "reason": reason, "answer": answer}
+
+    # Even after approval, the configured robot adapter must remain simulation-only.
+    try:
+        status = await guidance_service.start(request, "coffee_machine")
+    except (RuntimeError, ValueError, LookupError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"accepted": True, "reason": "started", "answer":
+            "I will demonstrate the coffee machine guidance workflow. "
+            "Navigation is simulated; please do not follow the robot.",
+            "guidance": status}

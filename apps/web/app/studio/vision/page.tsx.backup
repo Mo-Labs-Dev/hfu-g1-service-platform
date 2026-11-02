@@ -1,0 +1,498 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+type Detection = {
+  label: string;
+  class_id: number;
+  confidence: number;
+  bbox: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
+};
+
+type DetectionResponse = {
+  status: string;
+  model: string;
+  image: {
+    width: number;
+    height: number;
+  };
+  count: number;
+  detections: Detection[];
+};
+
+type CameraStatus = {
+  camera_connected: boolean;
+  frames_received: number;
+  error: string | null;
+};
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://127.0.0.1:8000";
+
+function cameraBase(): string {
+  const configured =
+    process.env.NEXT_PUBLIC_G1_CAMERA_URL;
+
+  if (configured) {
+    return configured.replace(/\/$/, "");
+  }
+
+  if (typeof window !== "undefined") {
+    return (
+      `${window.location.protocol}//` +
+      `${window.location.hostname}:8770`
+    );
+  }
+
+  return "http://127.0.0.1:8770";
+}
+
+const DETECTION_INTERVAL_MS = 1200;
+const CONFIDENCE_THRESHOLD = 0.45;
+
+export default function VisionPage() {
+  const [connected, setConnected] = useState(false);
+  const [cameraError, setCameraError] =
+    useState<string | null>(null);
+
+  const [analyzedFrame, setAnalyzedFrame] =
+    useState<string | null>(null);
+
+  const [detections, setDetections] =
+    useState<Detection[]>([]);
+
+  const [dimensions, setDimensions] = useState({
+    width: 1920,
+    height: 1080,
+  });
+
+  const [model, setModel] = useState("YOLO");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [lastAnalysis, setLastAnalysis] =
+    useState<Date | null>(null);
+
+  const [analysisError, setAnalysisError] =
+    useState<string | null>(null);
+
+  const [analysisCount, setAnalysisCount] = useState(0);
+
+  const frameUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    let controller: AbortController | null = null;
+    let nextTimer: ReturnType<typeof setTimeout> | null =
+      null;
+
+    let currentFrameUrl: string | null = null;
+
+    async function checkCamera() {
+      try {
+        const response = await fetch(
+          `${cameraBase()}/status`,
+          { cache: "no-store" }
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const status: CameraStatus =
+          await response.json();
+
+        if (!mounted) return;
+
+        setConnected(status.camera_connected);
+
+        setCameraError(
+          status.camera_connected
+            ? null
+            : status.error || "Waiting for camera frames"
+        );
+      } catch {
+        if (!mounted) return;
+        setConnected(false);
+        setCameraError("Camera bridge unavailable");
+      }
+    }
+
+    async function analyzeFrame() {
+      if (!mounted) return;
+
+      controller = new AbortController();
+      const signal = controller.signal;
+      let newFrameUrl: string | null = null;
+
+      try {
+        setAnalyzing(true);
+
+        const snapshotResponse = await fetch(
+          `${cameraBase()}/snapshot`,
+          {
+            cache: "no-store",
+            signal,
+          }
+        );
+
+        if (!snapshotResponse.ok) {
+          throw new Error(
+            `Camera HTTP ${snapshotResponse.status}`
+          );
+        }
+
+        const imageBlob =
+          await snapshotResponse.blob();
+
+        if (!imageBlob.type.includes("jpeg")) {
+          throw new Error("Invalid camera image");
+        }
+
+        newFrameUrl = URL.createObjectURL(imageBlob);
+
+        const file = new File(
+          [imageBlob],
+          "g1-vision-frame.jpg",
+          { type: "image/jpeg" }
+        );
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const detectionResponse = await fetch(
+          `${API_BASE}/api/vision/detect`,
+          {
+            method: "POST",
+            body: formData,
+            signal,
+          }
+        );
+
+        if (!detectionResponse.ok) {
+          throw new Error(
+            `YOLO HTTP ${detectionResponse.status}`
+          );
+        }
+
+        const result: DetectionResponse =
+          await detectionResponse.json();
+
+        if (!mounted || signal.aborted) return;
+
+        const previousFrame = currentFrameUrl;
+        currentFrameUrl = newFrameUrl;
+        frameUrlRef.current = newFrameUrl;
+        newFrameUrl = null;
+
+        setAnalyzedFrame(currentFrameUrl);
+        setDetections(result.detections);
+        setDimensions(result.image);
+        setModel(result.model);
+        setLastAnalysis(new Date());
+        setAnalysisCount((count) => count + 1);
+        setAnalysisError(null);
+
+        if (previousFrame) {
+          URL.revokeObjectURL(previousFrame);
+        }
+      } catch (error) {
+        if (mounted && !signal.aborted) {
+          setAnalysisError(
+            error instanceof Error
+              ? error.message
+              : "AI analysis unavailable"
+          );
+        }
+      } finally {
+        if (newFrameUrl) {
+          URL.revokeObjectURL(newFrameUrl);
+        }
+
+        if (mounted) {
+          setAnalyzing(false);
+
+          nextTimer = setTimeout(
+            analyzeFrame,
+            DETECTION_INTERVAL_MS
+          );
+        }
+      }
+    }
+
+    void checkCamera();
+    void analyzeFrame();
+
+    const statusTimer = setInterval(
+      checkCamera,
+      3000
+    );
+
+    return () => {
+      mounted = false;
+      controller?.abort();
+
+      clearInterval(statusTimer);
+
+      if (nextTimer) {
+        clearTimeout(nextTimer);
+      }
+
+      if (currentFrameUrl) {
+        URL.revokeObjectURL(currentFrameUrl);
+      }
+
+      frameUrlRef.current = null;
+    };
+  }, []);
+
+  const visibleDetections = detections.filter(
+    (item) =>
+      item.confidence >= CONFIDENCE_THRESHOLD
+  );
+
+  const peopleCount = visibleDetections.filter(
+    (item) =>
+      item.label.toLowerCase() === "person"
+  ).length;
+
+  const statusText = !connected
+    ? "CAMERA OFFLINE"
+    : analysisError
+      ? "AI RECONNECTING"
+      : analyzedFrame
+        ? "AI ACTIVE"
+        : "INITIALIZING AI";
+
+  return (
+    <div className="min-h-screen bg-slate-950 p-4 text-white md:p-6">
+      <div className="mx-auto max-w-7xl space-y-4">
+        <header className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+              G1 Vision
+            </h1>
+
+            <p className="mt-1 text-sm text-slate-400">
+              IPSE · Autonomous Visual Perception
+            </p>
+          </div>
+
+          <div
+            className={`flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold tracking-wide ${
+              connected && !analysisError
+                ? "border-emerald-800 bg-emerald-950 text-emerald-300"
+                : "border-amber-800 bg-amber-950 text-amber-300"
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${
+                connected && !analysisError
+                  ? "bg-emerald-400"
+                  : "bg-amber-400"
+              }`}
+            />
+            {statusText}
+          </div>
+        </header>
+
+        <main className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 md:px-5">
+            <div className="flex items-center gap-3">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  connected
+                    ? "bg-red-500"
+                    : "bg-slate-500"
+                }`}
+              />
+
+              <span className="text-sm font-medium">
+                G1 Head Camera
+              </span>
+            </div>
+
+            <span className="text-xs text-slate-400">
+              1920 × 1080 · Unitree SDK2
+            </span>
+          </div>
+
+          <div className="relative aspect-video w-full overflow-hidden bg-black">
+            {connected && !analyzedFrame && (
+              <img
+                src={`${cameraBase()}/stream`}
+                alt="Live G1 camera"
+                className="absolute inset-0 h-full w-full object-contain"
+              />
+            )}
+
+            {analyzedFrame && (
+              <div className="absolute inset-0">
+                <img
+                  src={analyzedFrame}
+                  alt="G1 camera AI analyzed frame"
+                  className="h-full w-full object-contain"
+                />
+
+                <svg
+                  className="pointer-events-none absolute inset-0 h-full w-full"
+                  viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+                  preserveAspectRatio="xMidYMid meet"
+                >
+                  {visibleDetections.map(
+                    (item, index) => {
+                      const { x1, y1, x2, y2 } =
+                        item.bbox;
+
+                      const color =
+                        item.label.toLowerCase() ===
+                        "person"
+                          ? "#4ade80"
+                          : "#fbbf24";
+
+                      const labelY =
+                        y1 >= 30
+                          ? y1 - 29
+                          : y1 + 2;
+
+                      const labelWidth = Math.min(
+                        260,
+                        Math.max(
+                          125,
+                          item.label.length * 14 + 75
+                        )
+                      );
+
+                      return (
+                        <g key={index}>
+                          <rect
+                            x={x1}
+                            y={y1}
+                            width={Math.max(0, x2 - x1)}
+                            height={Math.max(0, y2 - y1)}
+                            fill="none"
+                            stroke={color}
+                            strokeWidth="3"
+                          />
+
+                          <rect
+                            x={x1}
+                            y={labelY}
+                            width={labelWidth}
+                            height="27"
+                            rx="3"
+                            fill={color}
+                          />
+
+                          <text
+                            x={x1 + 7}
+                            y={labelY + 19}
+                            fontSize="18"
+                            fontWeight="600"
+                            fill="#0f172a"
+                          >
+                            {item.label}{" "}
+                            {Math.round(
+                              item.confidence * 100
+                            )}
+                            %
+                          </text>
+                        </g>
+                      );
+                    }
+                  )}
+                </svg>
+              </div>
+            )}
+
+            {!connected && !analyzedFrame && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center">
+                <span className="text-4xl">📷</span>
+
+                <p className="mt-4 font-medium">
+                  Waiting for G1 Camera
+                </p>
+
+                <p className="mt-2 text-sm text-slate-400">
+                  {cameraError ||
+                    "Connecting to camera bridge..."}
+                </p>
+              </div>
+            )}
+
+            <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2 rounded-lg bg-black/70 px-3 py-2 text-xs font-semibold backdrop-blur-sm">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  connected
+                    ? "bg-red-500"
+                    : "bg-slate-500"
+                }`}
+              />
+
+              {connected ? "G1 CAMERA" : "OFFLINE"}
+            </div>
+
+            <div className="pointer-events-none absolute right-4 top-4 rounded-lg bg-black/70 px-3 py-2 text-xs text-slate-200 backdrop-blur-sm">
+              {analyzing
+                ? "AI Processing..."
+                : analysisError
+                  ? "AI Retry Pending"
+                  : "Automatic Detection"}
+            </div>
+
+            {analyzedFrame && (
+              <div className="pointer-events-none absolute bottom-4 left-4 right-4 flex flex-wrap items-center justify-between gap-2">
+                <div className="rounded-lg bg-black/75 px-3 py-2 text-xs backdrop-blur-sm">
+                  <span className="font-semibold text-emerald-400">
+                    {peopleCount}
+                  </span>{" "}
+                  People
+                  <span className="mx-2 text-slate-500">
+                    |
+                  </span>
+                  <span className="font-semibold text-amber-300">
+                    {visibleDetections.length}
+                  </span>{" "}
+                  Objects
+                </div>
+
+                <div className="rounded-lg bg-black/75 px-3 py-2 text-xs text-slate-300 backdrop-blur-sm">
+                  {lastAnalysis
+                    ? `Analyzed ${lastAnalysis.toLocaleTimeString()}`
+                    : "Waiting for AI"}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 px-4 py-3 text-xs text-slate-400 md:px-5">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              Automatic visual recognition
+            </div>
+
+            <div className="flex items-center gap-4">
+              <span>{model}</span>
+              <span>{analysisCount} analyses</span>
+            </div>
+          </footer>
+        </main>
+
+        {analysisError && (
+          <p className="text-center text-xs text-amber-400">
+            AI: {analysisError}. Retrying automatically.
+          </p>
+        )}
+
+        <p className="text-center text-xs text-slate-500">
+          Institute for Product and Service Engineering ·
+          Hochschule Furtwangen University
+        </p>
+      </div>
+    </div>
+  );
+}
