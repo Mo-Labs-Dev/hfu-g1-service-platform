@@ -29,6 +29,10 @@ const navigation = [
     href: "/studio/robot-map",
   },
   {
+  label: "Navigation",
+  href: "/studio/navigation",
+  },
+  {
     label: "Interaction",
     href: "/studio/interaction",
   },

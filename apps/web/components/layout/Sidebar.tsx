@@ -16,6 +16,7 @@ const robotNavigation: NavigationItem[] = [
   { name: "Vision", href: "/vision", icon: "◉" },
   { name: "Interaction", href: "/interaction", icon: "◎" },
   { name: "Robot Map", href: "/studio/robot-map", icon: "▧" },
+  { name: "Navigation", href: "/studio/navigation", icon: "⌖" },
   { name: "Robot Control", href: "/control", icon: "◆" },
 ];
 
