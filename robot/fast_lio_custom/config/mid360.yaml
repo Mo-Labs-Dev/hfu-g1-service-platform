@@ -1,0 +1,69 @@
+/**:
+  ros__parameters:
+    common:
+      lid_topic: /livox/lidar
+      imu_topic: /livox/imu
+      time_sync_en: false
+      time_offset_lidar_to_imu: 0.0
+    preprocess:
+      lidar_type: 5
+      scan_line: 4
+      blind: 1.0
+      timestamp_unit: 3
+    mapping:
+      # G1 inverted MID360: rotate the world by 180 degrees about X.
+      initial_world_roll: 3.141592653589793
+      # The unified mapping launch enables gravity alignment at startup.
+      level_world_to_gravity: false
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0
+      det_range: 100.0
+      extrinsic_est_en: false
+      extrinsic_T:
+      - -0.011
+      - -0.02329
+      - 0.04412
+      extrinsic_R:
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    publish:
+      path_en: false
+      scan_publish_en: true
+      dense_publish_en: true
+      scan_bodyframe_pub_en: true
+    pcd_save:
+      pcd_save_en: true
+      interval: -1
+    static_map:
+      enabled: true              # Only active when pcd_save_en=true (mapping).
+      resolution: 0.05
+      confirm_scans: 3
+      confirm_seconds: 0.4
+      max_hit_gap: 2.0           # Sparse floor returns need a longer revisit window.
+      remove_misses: 5
+      endpoint_margin: 0.30
+      min_range: 1.0
+      max_range: 30.0
+      candidate_ttl: 6.0
+      max_rays: 6000
+      max_cells: 2000000
+      publish_period: 1.0
+      display_points: 150000
+      display_radius: 30.0
+    feature_extract_enable: false
+    point_filter_num: 3
+    max_iteration: 3
+    filter_size_surf: 0.5
+    filter_size_map: 0.5
+    cube_side_length: 1000.0
+    runtime_pos_log_enable: false
