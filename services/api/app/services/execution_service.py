@@ -37,6 +37,7 @@ class ExecutionService:
         task: RobotTask,
         workflow_id: str | None = None,
         workflow_snapshot: dict[str, Any] | None = None,
+        mode: str = "simulation",
     ) -> None:
         """
         Save a pending execution before starting the task.
@@ -63,7 +64,7 @@ class ExecutionService:
             id=task.id,
             workflow_id=workflow_id,
             workflow_name=task.name,
-            mode="simulation",
+            mode=mode,
             status="pending",
             workflow_snapshot=snapshot,
             steps=[

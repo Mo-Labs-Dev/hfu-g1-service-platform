@@ -13,7 +13,8 @@ from urllib.parse import parse_qs, urlsplit
 import cv2
 import numpy as np
 import rclpy
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry
+from tf2_ros import Buffer, TransformListener, TransformException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -37,6 +38,9 @@ from sensor_msgs_py import point_cloud2
 #   GET /plan?x=...&y=...&frame_id=map
 #   GET /floor-diagnostics
 #   GET /occupancy-grid
+#   GET /slam/map
+#   GET /slam/pose
+#   GET /slam/plan?x=...&y=...&frame_id=map (preview only)
 #
 # Floor detection is diagnostic only.
 # Physical robot motion is never commanded here.
@@ -47,6 +51,13 @@ PORT = 8769
 
 MAP_TOPIC = "/lidar_odometry/localmap_points"
 POSE_TOPIC = "/lidar_odometry/pose"
+SLAM_MAP_TOPIC = "/map"
+SLAM_BASE_FRAME = "pelvis"
+SLAM_MAX_CELLS = 1000000
+SLAM_POSE_MAX_AGE_SECONDS = 5.0
+SLAM_PLAN_MAX_MAP_AGE_SECONDS = 30.0
+SLAM_PLAN_CLEARANCE_RADIUS_M = 0.45  # Conservative preview clearance, not a certified G1 footprint.
+SLAM_PLAN_FREE_THRESHOLD = 20  # 0..19 accepted; all other cells blocked.
 
 MAX_MAP_POINTS = 100000
 POSE_TIMEOUT = 5.0
@@ -92,6 +103,11 @@ _map_version = 0
 _floor_cache_version = -1
 _floor_cache = None
 _floor_compute_lock = threading.Lock()
+
+_latest_slam_map = None
+_slam_map_received = None
+_latest_slam_pose = None
+_slam_pose_received = None
 
 
 def finite_number(value):
@@ -464,6 +480,14 @@ class G1MapBridge(Node):
             )
         )
 
+        # Separate read-only SLAM subscriptions; MOLA remains untouched.
+        self.slam_map_subscription = self.create_subscription(
+            OccupancyGrid, SLAM_MAP_TOPIC, self.on_slam_map, map_qos,
+        )
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
+        self.slam_pose_timer = self.create_timer(0.5, self.update_slam_pose)
+
         self.get_logger().info(
             f"Subscribed to pose: {POSE_TOPIC}"
         )
@@ -471,6 +495,95 @@ class G1MapBridge(Node):
         self.get_logger().info(
             f"Subscribed to map: {MAP_TOPIC}"
         )
+
+    def on_slam_map(self, msg):
+        global _latest_slam_map, _slam_map_received
+        width = int(msg.info.width)
+        height = int(msg.info.height)
+        if width <= 0 or height <= 0 or width * height > SLAM_MAX_CELLS:
+            self.get_logger().warning("Ignoring invalid or oversized SLAM map")
+            return
+        cells = list(msg.data)
+        if len(cells) != width * height:
+            self.get_logger().warning("Ignoring SLAM map with invalid cell count")
+            return
+        origin = msg.info.origin
+        payload = {
+            "connected": True,
+            "source": SLAM_MAP_TOPIC,
+            "frame_id": msg.header.frame_id,
+            "resolution_m": float(msg.info.resolution),
+            "width": width,
+            "height": height,
+            "origin": {
+                "position": {
+                    "x": float(origin.position.x),
+                    "y": float(origin.position.y),
+                    "z": float(origin.position.z),
+                },
+                "orientation": {
+                    "x": float(origin.orientation.x),
+                    "y": float(origin.orientation.y),
+                    "z": float(origin.orientation.z),
+                    "w": float(origin.orientation.w),
+                },
+            },
+            "data": cells,
+            "cell_encoding": "row-major, origin at lower-left; -1 unknown, 0 free, 100 occupied",
+            "counts": {
+                "unknown": sum(v == -1 for v in cells),
+                "free": sum(v == 0 for v in cells),
+                "occupied": sum(v >= 65 for v in cells),
+                "intermediate": sum(0 < v < 65 for v in cells),
+            },
+            "read_only": True,
+            "approved_for_navigation": False,
+            "physical_motion_enabled": False,
+        }
+        with _lock:
+            _latest_slam_map = payload
+            _slam_map_received = time.monotonic()
+
+    def update_slam_pose(self):
+        global _latest_slam_pose, _slam_pose_received
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                "map", SLAM_BASE_FRAME, rclpy.time.Time(),
+            )
+            # A cached transform must not masquerade as live localization.
+            stamp = transform.header.stamp
+            stamp_sec = stamp.sec + stamp.nanosec * 1e-9
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            if stamp_sec <= 0 or abs(now_sec - stamp_sec) > SLAM_POSE_MAX_AGE_SECONDS:
+                with _lock:
+                    _latest_slam_pose = None
+                    _slam_pose_received = None
+                return
+            t = transform.transform.translation
+            q = transform.transform.rotation
+            yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+            )
+            payload = {
+                "frame_id": "map",
+                "child_frame_id": SLAM_BASE_FRAME,
+                "position": {"x": float(t.x), "y": float(t.y), "z": float(t.z)},
+                "orientation": {
+                    "x": float(q.x), "y": float(q.y),
+                    "z": float(q.z), "w": float(q.w),
+                },
+                "yaw": float(yaw),
+                "yaw_degrees": math.degrees(yaw),
+                "transform_stamp_seconds": stamp_sec,
+            }
+            with _lock:
+                _latest_slam_pose = payload
+                _slam_pose_received = time.monotonic()
+        except TransformException:
+            with _lock:
+                _latest_slam_pose = None
+                _slam_pose_received = None
 
     def on_pose(self, msg):
         global _latest_pose, _pose_received
@@ -929,6 +1042,166 @@ def astar(grid, start, goal):
     return None
 
 
+
+# ------------------------------------------------------------
+# ROS2 SLAM occupancy-grid A* preview (never sends commands)
+# ------------------------------------------------------------
+def calculate_slam_plan(goal_x, goal_y, requested_frame):
+    """Preview a route over observed free SLAM cells only.
+
+    All coordinates are in the map frame. Endpoints must already have
+    full clearance; this function never silently moves/snaps them.
+    """
+    failure = {
+        "success": False,
+        "mode": "slam_preview_only",
+        "read_only": True,
+        "approved_for_navigation": False,
+        "physical_motion_enabled": False,
+    }
+
+    def reject(reason, **details):
+        return {**failure, "reason": reason, **details}
+
+    if not (finite_number(goal_x) and finite_number(goal_y)):
+        return reject("Invalid goal coordinates")
+
+    with _lock:
+        slam_map = _latest_slam_map
+        slam_pose = _latest_slam_pose
+        map_received = _slam_map_received
+        pose_received = _slam_pose_received
+
+    if slam_map is None or slam_pose is None:
+        return reject("Waiting for SLAM map and localization")
+
+    map_age = age_seconds(map_received)
+    pose_age = age_seconds(pose_received)
+    if map_age is None or map_age > SLAM_PLAN_MAX_MAP_AGE_SECONDS:
+        return reject("SLAM occupancy grid is stale", map_age_seconds=map_age)
+    if pose_age is None or pose_age > SLAM_POSE_MAX_AGE_SECONDS:
+        return reject("SLAM localization is stale", pose_age_seconds=pose_age)
+
+    frame = slam_map.get("frame_id")
+    if not frame or frame != "map" or requested_frame != frame or slam_pose.get("frame_id") != frame:
+        return reject("Coordinate frame mismatch", map_frame=frame,
+                      pose_frame=slam_pose.get("frame_id"), requested_frame=requested_frame)
+
+    width = int(slam_map["width"])
+    height = int(slam_map["height"])
+    resolution = float(slam_map["resolution_m"])
+    if (width <= 0 or height <= 0 or width * height > SLAM_MAX_CELLS
+            or not math.isfinite(resolution) or resolution <= 0):
+        return reject("Invalid SLAM map dimensions or resolution")
+    if len(slam_map["data"]) != width * height:
+        return reject("Invalid SLAM map data length")
+
+    origin = slam_map["origin"]
+    ox = float(origin["position"]["x"])
+    oy = float(origin["position"]["y"])
+    q = origin["orientation"]
+    qx, qy, qz, qw = (float(q[k]) for k in ("x", "y", "z", "w"))
+    norm = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+    if not math.isfinite(norm) or norm < 1e-9:
+        return reject("Invalid SLAM map origin quaternion")
+    qx, qy, qz, qw = (v / norm for v in (qx, qy, qz, qw))
+    # Reject tilted grids: the planar transformation assumes map Z is vertical.
+    tilt_x = 2 * (qx*qz - qw*qy)
+    tilt_y = 2 * (qy*qz + qw*qx)
+    if math.hypot(tilt_x, tilt_y) > 1e-3:
+        return reject("SLAM map origin is not planar")
+    yaw = math.atan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+
+    def world_to_cell(x, y):
+        dx, dy = x - ox, y - oy
+        local_x = cos_yaw * dx + sin_yaw * dy
+        local_y = -sin_yaw * dx + cos_yaw * dy
+        return (math.floor(local_y / resolution), math.floor(local_x / resolution))
+
+    def cell_to_world(cell):
+        row, col = cell
+        local_x = (col + 0.5) * resolution
+        local_y = (row + 0.5) * resolution
+        return [ox + cos_yaw*local_x - sin_yaw*local_y,
+                oy + sin_yaw*local_x + cos_yaw*local_y]
+
+    start = [float(slam_pose["position"]["x"]), float(slam_pose["position"]["y"])]
+    goal = [float(goal_x), float(goal_y)]
+    if not all(math.isfinite(v) for v in start):
+        return reject("Invalid SLAM robot position")
+
+    start_cell = world_to_cell(*start)
+    goal_cell = world_to_cell(*goal)
+    def in_bounds(cell):
+        return 0 <= cell[0] < height and 0 <= cell[1] < width
+    if not in_bounds(start_cell):
+        return reject("Robot is outside SLAM map bounds", start=start)
+    if not in_bounds(goal_cell):
+        return reject("Destination is outside SLAM map bounds", goal=goal)
+
+    data = np.asarray(slam_map["data"], dtype=np.int16).reshape((height, width))
+    observed_free = (data >= 0) & (data < SLAM_PLAN_FREE_THRESHOLD)
+    blocked = ~observed_free  # Includes unknown (-1) and intermediate occupancy.
+    radius_cells = math.ceil(SLAM_PLAN_CLEARANCE_RADIUS_M / resolution)
+    # A disk kernel inflates obstacles AND unknown cells, including map edges.
+    size = 2 * radius_cells + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+    inflated = cv2.dilate(blocked.astype(np.uint8), kernel).astype(bool)
+    traversable = observed_free & ~inflated
+    # Reject cells within clearance distance of map boundary as unobserved outside.
+    if radius_cells:
+        traversable[:radius_cells, :] = False
+        traversable[-radius_cells:, :] = False
+        traversable[:, :radius_cells] = False
+        traversable[:, -radius_cells:] = False
+
+    diagnostics = {
+        "resolution_m": resolution,
+        "clearance_radius_m": SLAM_PLAN_CLEARANCE_RADIUS_M,
+        "free_threshold_exclusive": SLAM_PLAN_FREE_THRESHOLD,
+        "unknown_cells": int((data < 0).sum()),
+        "observed_free_cells": int(observed_free.sum()),
+        "traversable_cells_after_clearance": int(traversable.sum()),
+        "map_age_seconds": map_age,
+        "pose_age_seconds": pose_age,
+        "start_cell": list(start_cell),
+        "goal_cell": list(goal_cell),
+    }
+    if not traversable[start_cell]:
+        return reject("Robot position has insufficient verified free-space clearance",
+                      diagnostics=diagnostics)
+    if not traversable[goal_cell]:
+        return reject("Destination has insufficient verified free-space clearance",
+                      diagnostics=diagnostics)
+
+    cells = astar(traversable, start_cell, goal_cell)
+    if cells is None:
+        return reject("No connected path through verified free cells",
+                      diagnostics=diagnostics)
+    path = [cell_to_world(cell) for cell in cells]
+    distance = sum(math.hypot(b[0]-a[0], b[1]-a[1]) for a, b in zip(path, path[1:]))
+    return {
+        "success": True,
+        "mode": "slam_preview_only",
+        "frame_id": frame,
+        "start": start,
+        "goal": goal,
+        "path": path,
+        "distance_m": distance,
+        "waypoint_count": len(path),
+        "diagnostics": diagnostics,
+        "warnings": [
+            "Preview only; not approved for physical robot navigation.",
+            "SLAM occupancy is not a validated traversability or dynamic-obstacle map.",
+            "No motion command or Nav2 goal was sent.",
+        ],
+        "read_only": True,
+        "approved_for_navigation": False,
+        "physical_motion_enabled": False,
+    }
+
+
 def calculate_plan(
     goal_x,
     goal_y,
@@ -1348,6 +1621,15 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/occupancy-grid":
                 self.handle_occupancy_grid()
 
+            elif path == "/slam/map":
+                self.handle_slam_map()
+
+            elif path == "/slam/pose":
+                self.handle_slam_pose()
+
+            elif path == "/slam/plan":
+                self.handle_slam_plan(parsed.query)
+
             else:
                 self.send_json(
                     404,
@@ -1518,6 +1800,58 @@ class Handler(BaseHTTPRequestHandler):
             200,
             result,
         )
+
+    def handle_slam_plan(self, query):
+        try:
+            params = parse_qs(query, keep_blank_values=True)
+            x = float(params["x"][0])
+            y = float(params["y"][0])
+            frame = params["frame_id"][0]
+            if not (finite_number(x) and finite_number(y) and frame == "map"):
+                raise ValueError("Invalid SLAM planning parameters")
+        except (KeyError, IndexError, TypeError, ValueError):
+            self.send_json(400, {
+                "success": False,
+                "reason": "Required parameters: x, y, frame_id=map",
+                "read_only": True,
+                "physical_motion_enabled": False,
+            })
+            return
+        self.send_json(200, calculate_slam_plan(x, y, frame))
+
+    def handle_slam_map(self):
+        with _lock:
+            payload = _latest_slam_map
+            received = _slam_map_received
+        if payload is None:
+            self.send_json(200, {
+                "connected": False, "source": SLAM_MAP_TOPIC,
+                "age_seconds": None, "message": "Waiting for SLAM occupancy grid",
+                "approved_for_navigation": False, "physical_motion_enabled": False,
+            })
+            return
+        age = age_seconds(received)
+        self.send_json(200, {
+            **payload,
+            "connected": age is not None and age <= 30.0,
+            "age_seconds": age,
+        })
+
+    def handle_slam_pose(self):
+        with _lock:
+            pose = dict(_latest_slam_pose) if _latest_slam_pose is not None else None
+            received = _slam_pose_received
+        age = age_seconds(received)
+        self.send_json(200, {
+            "connected": pose is not None and age is not None
+                         and age <= SLAM_POSE_MAX_AGE_SECONDS,
+            "source": "tf:map->" + SLAM_BASE_FRAME,
+            "age_seconds": age,
+            "pose": pose,
+            "read_only": True,
+            "approved_for_navigation": False,
+            "physical_motion_enabled": False,
+        })
 
     def handle_occupancy_grid(self):
         self.send_json(200, get_occupancy_grid())

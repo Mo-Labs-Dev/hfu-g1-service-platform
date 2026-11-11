@@ -1,0 +1,17 @@
+nav_velocity_bridge:
+  ros__parameters:
+    input_topic: /cmd_vel_preview
+    network_interface: eth0
+    dry_run: true
+    prepare_walkrun_on_enable: false
+    max_vx: 1.0
+    max_wz: 0.8
+    terminal_max_wz: 0.80       # 与当前G1可启动迈步的终点转向幅度一致
+    yaw_sign: 1.0
+    command_timeout: 0.30
+    health_timeout: 0.30
+    sdk_command_duration: 0.50  # bounded command survives one 0.2s state RPC + refresh
+    # Zero disables the per-goal trial budgets for continuous navigation.
+    trial_seconds: 0.0
+    travel_limit: 0.0
+    turn_limit: 0.0

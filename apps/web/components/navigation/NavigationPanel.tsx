@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -48,6 +49,195 @@ function stepStatusLabel(
     default:
       return "Pending";
   }
+}
+
+
+
+type SlamMap = {
+  connected: boolean;
+  frame_id?: string;
+  width?: number;
+  height?: number;
+  resolution_m?: number;
+  origin?: {
+    position: { x: number; y: number };
+    orientation: { x: number; y: number; z: number; w: number };
+  };
+  data?: number[];
+  age_seconds?: number | null;
+  message?: string;
+};
+
+type SlamPose = {
+  connected: boolean;
+  age_seconds?: number | null;
+  pose?: {
+    frame_id: string;
+    position: { x: number; y: number };
+    yaw: number;
+    yaw_degrees?: number;
+  } | null;
+};
+
+function getMapBridgeUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_MAP_BRIDGE_URL;
+  if (configured) return configured.replace(/\/$/, "");
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:8769`;
+  }
+  return "http://localhost:8769";
+}
+
+function LiveSlamMap() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [map, setMap] = useState<SlamMap | null>(null);
+  const [pose, setPose] = useState<SlamPose | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    const controller = new AbortController();
+    const base = getMapBridgeUrl();
+    async function poll() {
+      try {
+        const [mapResponse, poseResponse] = await Promise.all([
+          fetch(`${base}/slam/map`, { cache: "no-store", signal: controller.signal }),
+          fetch(`${base}/slam/pose`, { cache: "no-store", signal: controller.signal }),
+        ]);
+        if (!mapResponse.ok || !poseResponse.ok) throw new Error("Map bridge returned an error");
+        const [nextMap, nextPose] = await Promise.all([
+          mapResponse.json() as Promise<SlamMap>,
+          poseResponse.json() as Promise<SlamPose>,
+        ]);
+        if (!disposed) {
+          setMap(nextMap);
+          setPose(nextPose);
+          setMapError(null);
+        }
+      } catch (err) {
+        if (!disposed) {
+          setMapError(err instanceof Error ? err.message : "Map bridge unavailable");
+          setMap(null);
+          setPose(null);
+        }
+      }
+    }
+    void poll();
+    const timer = window.setInterval(() => void poll(), 2000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const width = map?.width ?? 0;
+    const height = map?.height ?? 0;
+    if (!map?.connected || !map.data || !width || !height || map.data.length !== width * height) {
+      canvas.width = 1;
+      canvas.height = 1;
+      ctx.clearRect(0, 0, 1, 1);
+      return;
+    }
+    const scale = Math.max(1, Math.min(6, Math.floor(660 / Math.max(width, height))));
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const image = ctx.createImageData(width, height);
+    for (let row = 0; row < height; row++) {
+      for (let col = 0; col < width; col++) {
+        const occupancy = map.data[row * width + col];
+        const pixel = ((height - 1 - row) * width + col) * 4;
+        const value = occupancy < 0 ? 190 : occupancy >= 65 ? 42 : occupancy === 0 ? 255 : Math.round(255 - occupancy * 1.8);
+        image.data[pixel] = value;
+        image.data[pixel + 1] = value;
+        image.data[pixel + 2] = value;
+        image.data[pixel + 3] = 255;
+      }
+    }
+    const raster = document.createElement("canvas");
+    raster.width = width;
+    raster.height = height;
+    raster.getContext("2d")?.putImageData(image, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(raster, 0, 0, canvas.width, canvas.height);
+
+    if (
+  pose?.connected &&
+  pose.pose &&
+  pose.pose.frame_id === map.frame_id &&
+  map.origin &&
+  map.resolution_m
+) {
+      const origin = map.origin;
+      const q = origin.orientation;
+      const originYaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+      const dx = pose.pose.position.x - origin.position.x;
+      const dy = pose.pose.position.y - origin.position.y;
+      const localX = Math.cos(originYaw) * dx + Math.sin(originYaw) * dy;
+      const localY = -Math.sin(originYaw) * dx + Math.cos(originYaw) * dy;
+      const px = (localX / map.resolution_m) * scale;
+      const py = (height - localY / map.resolution_m) * scale;
+      const angle = pose.pose.yaw - originYaw;
+      if (px >= 0 && px < canvas.width && py >= 0 && py < canvas.height) {
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(-angle);
+        ctx.fillStyle = "#009b77";
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(19, 0);
+        ctx.strokeStyle = "#00765b";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }, [map, pose]);
+
+  const mapReady = Boolean(map?.connected && map.data?.length);
+  const poseReady = Boolean(pose?.connected && pose.pose?.frame_id === map?.frame_id);
+  return (
+    <section className="border border-[#dfe3e1] bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e5e8e6] px-7 py-5">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#657078]">Live ROS2 SLAM</p>
+          <h2 className="mt-2 text-[20px] font-bold text-[#2d3337]">Laboratory Map</h2>
+        </div>
+        <span className={`text-[11px] font-semibold ${mapReady ? "text-[#008567]" : "text-amber-700"}`}>
+          {mapReady ? "Map connected" : "Waiting for map"} · {poseReady ? "Robot localized" : "Pose unavailable"}
+        </span>
+      </div>
+      <div className="px-7 py-6">
+        {mapError && <p role="alert" className="mb-4 text-[12px] text-red-700">Map bridge: {mapError}</p>}
+        <div className="flex min-h-[260px] items-center justify-center overflow-auto border border-[#e5e8e6] bg-[#f4f6f5] p-4">
+          {mapReady ? (
+            <canvas ref={canvasRef} role="img" aria-label="SLAM occupancy grid with G1 position and heading when localized" className="max-w-full border border-[#cbd3cf]" style={{ imageRendering: "pixelated" }} />
+          ) : (
+            <p className="text-[13px] text-[#657078]">{map?.message ?? "Waiting for live SLAM occupancy data…"}</p>
+          )}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-[11px] text-[#657078]">
+          <span>⬜ Free</span><span>⬛ Occupied</span><span>◼ Unknown (gray)</span><span className="text-[#008567]">● G1 robot + heading</span>
+        </div>
+        <p className="mt-4 text-[12px] text-[#657078]">
+          {mapReady ? `${map?.width} × ${map?.height} cells · ${map?.resolution_m?.toFixed(3) ?? "?"} m/cell` : "Map unavailable"}
+          {poseReady && pose?.pose ? ` · G1: X ${pose.pose.position.x.toFixed(2)} m, Y ${pose.pose.position.y.toFixed(2)} m, heading ${(pose.pose.yaw_degrees ?? pose.pose.yaw * 180 / Math.PI).toFixed(1)}°` : " · No verified live robot pose"}
+        </p>
+        <p className="mt-3 text-[11px] leading-5 text-[#9aa2a6]">Visualization only. Unknown space is not safe space. Map data does not authorize physical navigation or walking.</p>
+      </div>
+    </section>
+  );
 }
 
 export default function NavigationPanel() {
@@ -376,6 +566,7 @@ export default function NavigationPanel() {
           </p>
         </div>
       </section>
+      <LiveSlamMap />
     </div>
   );
 }

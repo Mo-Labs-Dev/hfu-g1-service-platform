@@ -123,7 +123,7 @@ class WorkflowGuidanceService:
                 if action == "navigate":
                     state = "navigating"
                     message = (
-                        f"{name} — simulated navigation."
+                        f"{name} — navigation in progress."
                     )
                 elif action == "speak":
                     state = (
@@ -249,10 +249,8 @@ class WorkflowGuidanceService:
                 request.app.state.execution_service
             )
 
-            if robot.mode != "simulation":
-                raise RuntimeError(
-                    "Guidance requires simulation mode."
-                )
+            if robot.mode not in {"simulation", "physical"}:
+                raise RuntimeError("Unsupported robot workflow mode")
 
             if engine.is_busy:
                 raise RuntimeError(
@@ -281,8 +279,7 @@ class WorkflowGuidanceService:
                     "The guidance workflow has no steps."
                 )
 
-            # Keep the visitor-facing endpoint restricted
-            # to this known, simulation-only tour.
+            # Restrict visitor guidance to this known coffee-machine tour.
             for step in validated.steps:
                 if step.action.value not in {
                     "speak",
@@ -324,6 +321,7 @@ class WorkflowGuidanceService:
                 task=task,
                 workflow_id=COFFEE_WORKFLOW_ID,
                 workflow_snapshot=workflow,
+                mode=robot.mode,
             )
 
             try:

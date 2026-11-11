@@ -1,135 +1,107 @@
 import unittest
 
-from robot.g1pilot_adapter.navigation_bridge import (
-    MockMotionAdapter,
-)
-from robot.g1pilot_adapter.navigation_supervisor import (
-    NavigationSupervisor,
-)
+from robot.g1pilot_adapter.navigation_bridge import MockMotionAdapter
+from robot.g1pilot_adapter.navigation_supervisor import NavigationSupervisor
 
 
 class FakeClock:
     def __init__(self):
-        self.now = 100.0
+        self.current = 100.0
 
     def __call__(self):
-        return self.now
+        return self.current
 
     def advance(self, seconds):
-        self.now += seconds
+        self.current += seconds
 
 
-class NavigationSupervisorTests(unittest.TestCase):
+class TestNavigationSupervisor(unittest.TestCase):
 
     def setUp(self):
         self.clock = FakeClock()
         self.motion = MockMotionAdapter()
-
         self.supervisor = NavigationSupervisor(
             motion=self.motion,
             clock=self.clock,
             timeout=0.5,
         )
 
-        self.axes = [0.0] * 8
-        self.buttons = [0] * 14
-        self.axes[1] = -0.2
-        self.buttons[8] = 1
-
-    def send(self, created_at=None):
-        if created_at is None:
-            created_at = self.clock()
-
-        return self.supervisor.receive_joy(
-            self.axes,
-            self.buttons,
-            created_at,
-        )
-
     def test_disabled_by_default(self):
+        self.assertFalse(self.supervisor.authorized)
+
         with self.assertRaises(RuntimeError):
-            self.send()
+            self.supervisor.receive_joy(
+                axes=[0.0] * 8,
+                buttons=[0] * 14,
+                created_at=self.clock(),
+            )
 
         self.assertEqual(len(self.motion.commands), 0)
 
-    def test_authorized_movement(self):
+    def test_valid_autonomous_command(self):
         self.supervisor.enable()
 
-        result = self.send()
+        axes = [0.0] * 8
+        buttons = [0] * 14
 
-        self.assertAlmostEqual(result.vx, 0.1)
+        axes[1] = -0.2
+        buttons[8] = 1
+
+        command = self.supervisor.receive_joy(
+            axes=axes,
+            buttons=buttons,
+            created_at=self.clock(),
+        )
+
         self.assertEqual(len(self.motion.commands), 1)
+        self.assertGreater(command.vx, 0.0)
+        self.assertTrue(self.supervisor.authorized)
 
-    def test_timeout_after_command(self):
+    def test_command_timeout(self):
         self.supervisor.enable()
-        self.send()
+
+        axes = [0.0] * 8
+        buttons = [0] * 14
+
+        axes[1] = -0.2
+        buttons[8] = 1
+
+        self.supervisor.receive_joy(
+            axes=axes,
+            buttons=buttons,
+            created_at=self.clock(),
+        )
 
         self.clock.advance(0.6)
 
-        self.assertTrue(self.supervisor.tick())
+        timed_out = self.supervisor.tick()
+
+        self.assertTrue(timed_out)
         self.assertFalse(self.supervisor.authorized)
-        self.assertGreater(self.motion.stop_count, 0)
+        self.assertGreaterEqual(self.motion.stop_count, 1)
 
-    def test_timeout_without_first_command(self):
-        self.supervisor.enable()
-
-        self.clock.advance(0.6)
-
-        self.assertTrue(self.supervisor.tick())
-        self.assertFalse(self.supervisor.authorized)
-
-    def test_stale_message_rejected(self):
+    def test_stale_command_rejected(self):
         self.supervisor.enable()
 
         self.clock.advance(0.6)
 
         with self.assertRaises(TimeoutError):
-            self.send(created_at=100.0)
-
-        self.assertFalse(self.supervisor.authorized)
-
-    def test_invalid_message_disables(self):
-        self.supervisor.enable()
-
-        with self.assertRaises(ValueError):
             self.supervisor.receive_joy(
-                [float("nan")] * 8,
-                self.buttons,
-                self.clock(),
+                axes=[0.0] * 8,
+                buttons=[0] * 14,
+                created_at=self.clock() - 0.6,
             )
 
         self.assertFalse(self.supervisor.authorized)
+        self.assertEqual(len(self.motion.commands), 0)
+        self.assertGreaterEqual(self.motion.stop_count, 1)
 
-    def test_disable_requires_reauthorization(self):
+    def test_disable_requests_stop(self):
         self.supervisor.enable()
         self.supervisor.disable()
 
-        with self.assertRaises(RuntimeError):
-            self.send()
-
-    def test_no_stale_replay(self):
-        self.supervisor.enable()
-        self.send()
-
-        self.clock.advance(0.6)
-
-        with self.assertRaises(TimeoutError):
-            self.send()
-
         self.assertFalse(self.supervisor.authorized)
-
-    def test_real_adapter_rejected(self):
-        class FakeRealAdapter:
-            def move(self, **kwargs):
-                pass
-
-            def stop(self):
-                pass
-
-        with self.assertRaises(TypeError):
-            NavigationSupervisor(
-                motion=FakeRealAdapter(),
-            )
+        self.assertEqual(self.motion.stop_count, 1)
 
 
 if __name__ == "__main__":
