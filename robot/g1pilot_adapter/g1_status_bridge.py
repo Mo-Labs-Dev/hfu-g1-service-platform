@@ -15,6 +15,7 @@ from unitree_sdk2py.core.channel import (
     ChannelSubscriber,
 )
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
 
@@ -100,6 +101,7 @@ robot_client = create_client()
 # ============================================================
 
 class LiveMotionFeedback:
+    """Read-only independent IMU and odometry feedback; never authorizes motion."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -109,100 +111,121 @@ class LiveMotionFeedback:
         self.accelerometer = None
         self.error = None
         self.subscriber = None
+        self.odom_subscriber = None
+        self.odom_last_received = None
+        self.odom_message_count = 0
+        self.odom_velocity = None
+        self.odom_position = None
+        self.odom_yaw_speed = None
+        self.odom_error = None
+        self.stationary_since = None
 
     def callback(self, message):
         try:
-            gyro = [
-                float(value)
-                for value in message.imu_state.gyroscope
-            ]
-
-            accel = [
-                float(value)
-                for value in message.imu_state.accelerometer
-            ]
-
+            gyro = [float(value) for value in message.imu_state.gyroscope]
+            accel = [float(value) for value in message.imu_state.accelerometer]
             if len(gyro) != 3 or len(accel) != 3:
                 return
-
-            if not all(
-                math.isfinite(value)
-                for value in gyro + accel
-            ):
+            if not all(math.isfinite(v) for v in gyro + accel):
                 return
-
             with self.lock:
                 self.gyroscope = gyro
                 self.accelerometer = accel
                 self.last_received = time.monotonic()
                 self.message_count += 1
                 self.error = None
-
         except Exception:
             logger.exception("Invalid LowState feedback")
 
+    def odom_callback(self, message):
+        try:
+            velocity = [float(v) for v in message.velocity]
+            position = [float(v) for v in message.position]
+            yaw_speed = float(message.yaw_speed)
+            if (len(velocity) != 3 or len(position) != 3 or
+                    not all(math.isfinite(v) for v in velocity + position + [yaw_speed])):
+                raise ValueError("Non-finite or malformed odometry")
+            now = time.monotonic()
+            with self.lock:
+                self.odom_velocity = velocity
+                self.odom_position = position
+                self.odom_yaw_speed = yaw_speed
+                self.odom_last_received = now
+                self.odom_message_count += 1
+                self.odom_error = None
+                # Observation only: does NOT verify a commanded stop.
+                still = (math.hypot(velocity[0], velocity[1]) <= 0.02
+                         and abs(velocity[2]) <= 0.02
+                         and abs(yaw_speed) <= 0.03)
+                if still:
+                    if self.stationary_since is None:
+                        self.stationary_since = now
+                else:
+                    self.stationary_since = None
+        except Exception as error:
+            with self.lock:
+                self.odom_error = str(error)
+                self.stationary_since = None
+            logger.warning("Invalid SportModeState feedback: %s", error)
+
     def start(self):
         try:
-            self.subscriber = ChannelSubscriber(
-                "rt/lowstate",
-                LowState_,
-            )
-
+            self.subscriber = ChannelSubscriber("rt/lowstate", LowState_)
             self.subscriber.Init(self.callback, 10)
-
             logger.info("LowState subscriber started")
-
         except Exception as error:
             with self.lock:
                 self.error = str(error)
-
-            logger.exception(
-                "LowState subscriber failed"
-            )
+            logger.exception("LowState subscriber failed")
+        try:
+            self.odom_subscriber = ChannelSubscriber(
+                "rt/odommodestate", SportModeState_)
+            self.odom_subscriber.Init(self.odom_callback, 10)
+            logger.info("SportModeState subscriber started")
+        except Exception as error:
+            with self.lock:
+                self.odom_error = str(error)
+            logger.exception("SportModeState subscriber failed")
 
     def status(self) -> dict:
         with self.lock:
-            age = (
-                None
-                if self.last_received is None
-                else time.monotonic() - self.last_received
+            now = time.monotonic()
+            age = None if self.last_received is None else now - self.last_received
+            odom_age = (None if self.odom_last_received is None
+                        else now - self.odom_last_received)
+            odom_fresh = odom_age is not None and odom_age <= 0.5
+            stationary_observed = (
+                odom_fresh and self.stationary_since is not None
+                and now - self.stationary_since >= 1.0
             )
-
             return {
-                "feedback_source": "rt/lowstate",
-                "feedback_received": (
-                    self.last_received is not None
-                ),
-                "feedback_fresh": (
-                    age is not None and age <= 0.5
-                ),
-                "feedback_age_ms": (
-                    None
-                    if age is None
-                    else round(age * 1000)
-                ),
-                "feedback_message_count": (
-                    self.message_count
-                ),
-                "measured_velocity": None,
-                "measured_yaw_speed": (
-                    None
-                    if self.gyroscope is None
-                    else self.gyroscope[2]
-                ),
-                "imu_gyroscope": (
-                    None
-                    if self.gyroscope is None
-                    else list(self.gyroscope)
-                ),
-                "imu_accelerometer": (
-                    None
-                    if self.accelerometer is None
-                    else list(self.accelerometer)
-                ),
-                "translation_velocity_available": False,
+                "feedback_source": "rt/lowstate + rt/odommodestate",
+                "feedback_received": self.last_received is not None,
+                "feedback_fresh": age is not None and age <= 0.5,
+                "feedback_age_ms": None if age is None else round(age * 1000),
+                "feedback_message_count": self.message_count,
+                "measured_velocity": (list(self.odom_velocity)
+                                      if odom_fresh and self.odom_velocity is not None
+                                      else None),
+                "measured_yaw_speed": (self.odom_yaw_speed if odom_fresh
+                                       else None),
+                "imu_gyroscope": (list(self.gyroscope)
+                                   if self.gyroscope is not None else None),
+                "imu_accelerometer": (list(self.accelerometer)
+                                      if self.accelerometer is not None else None),
+                "translation_velocity_available": bool(odom_fresh and self.odom_velocity is not None),
+                "odometry_source": "rt/odommodestate",
+                "odometry_received": self.odom_last_received is not None,
+                "odometry_fresh": odom_fresh,
+                "odometry_age_ms": None if odom_age is None else round(odom_age * 1000),
+                "odometry_message_count": self.odom_message_count,
+                "odometry_position": (list(self.odom_position)
+                                      if odom_fresh and self.odom_position is not None
+                                      else None),
+                "stationary_observed_for_one_second": bool(stationary_observed),
                 "stop_verified_by_feedback": False,
                 "feedback_error": self.error,
+                "odometry_error": self.odom_error,
             }
 
 
@@ -336,6 +359,8 @@ def request_control(
             "error": "FSM command disabled",
         }
 
+    # Serialize individual SDK operations, not the entire
+    # FSM verification period.
     if not client_lock.acquire(blocking=False):
         return 409, {
             "status": "busy",
@@ -354,9 +379,7 @@ def request_control(
                 "error": "Unexpected source FSM",
             }
 
-        code = robot_client.SetFsmId(
-            mode["target"]
-        )
+        code = robot_client.SetFsmId(mode["target"])
 
         if code != 0:
             return 502, {
@@ -364,32 +387,6 @@ def request_control(
                 "sdk_code": code,
                 "error": "FSM transition rejected",
             }
-
-        deadline = time.monotonic() + 8.0
-        last_fsm = before
-
-        while time.monotonic() < deadline:
-            last_fsm = read_fsm()
-
-            if last_fsm == mode["target"]:
-                return 200, {
-                    "status": "fsm_confirmed",
-                    "action": action,
-                    "before_fsm": before,
-                    "after_fsm": last_fsm,
-                    "physical_posture_verified": False,
-                    "physical_motion_verified": False,
-                }
-
-            time.sleep(0.25)
-
-        return 504, {
-            "status": "unverified",
-            "action": action,
-            "before_fsm": before,
-            "after_fsm": last_fsm,
-            "error": "FSM transition timed out",
-        }
 
     except Exception as error:
         logger.exception("FSM control failed")
@@ -402,6 +399,50 @@ def request_control(
 
     finally:
         client_lock.release()
+
+    # Wait outside the SDK lock. Each poll acquires
+    # the lock only for its own SDK request.
+    deadline = time.monotonic() + 8.0
+    last_fsm = before
+
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(0.25)
+
+            if not client_lock.acquire(blocking=False):
+                continue
+
+            try:
+                last_fsm = read_fsm()
+            finally:
+                client_lock.release()
+
+            if last_fsm == mode["target"]:
+                return 200, {
+                    "status": "fsm_confirmed",
+                    "action": action,
+                    "before_fsm": before,
+                    "after_fsm": last_fsm,
+                    "physical_posture_verified": False,
+                    "physical_motion_verified": False,
+                }
+
+        return 504, {
+            "status": "unverified",
+            "action": action,
+            "before_fsm": before,
+            "after_fsm": last_fsm,
+            "error": "FSM transition timed out",
+        }
+
+    except Exception as error:
+        logger.exception("FSM verification failed")
+
+        return 503, {
+            "status": "error",
+            "action": action,
+            "error": str(error),
+        }
 
 
 # ============================================================
@@ -464,8 +505,8 @@ class PhysicalMotionController:
                     self.watchdog_stop_attempted
                 ),
                 "stop_verification_reason": (
-                    "Independent translational velocity "
-                    "feedback is unavailable"
+                    "Live odometry observation does not yet validate "
+                    "the commanded stop response or watchdog"
                 ),
                 "command_generation": (
                     self.command_generation
