@@ -48,6 +48,9 @@ class Route:
     title_de: str = ""
     arrival_en: str = ""
     arrival_de: str = ""
+    # Lab tour: stops marked while teaching. Each stop:
+    # {"index": point index, "name", "yaw", "title_en", "title_de", "text_en", "text_de"}
+    stops: list[dict] = field(default_factory=list)
 
     @property
     def xy(self) -> np.ndarray:
@@ -57,6 +60,26 @@ class Route:
     def length(self) -> float:
         xy = self.xy
         return float(np.linalg.norm(np.diff(xy, axis=0), axis=1).sum()) if len(xy) > 1 else 0.0
+
+    @property
+    def is_tour(self) -> bool:
+        return bool(self.stops)
+
+    @property
+    def is_loop(self) -> bool:
+        """Route ends where it started (a tour that comes back home by itself)."""
+        a, b = self.points[0], self.points[-1]
+        return len(self.points) > 20 and math.hypot(a[0] - b[0], a[1] - b[1]) < 1.0
+
+    def segment(self, i0: int, i1: int, end_yaw: float | None = None, name: str = "") -> "Route":
+        """Part of the route from point i0 to i1 (inclusive)."""
+        pts = self.points[i0:i1 + 1]
+        if len(pts) < 2:
+            pts = self.points[max(0, i1 - 1):i1 + 1]
+        return Route(name=name or f"{self.name}_{i0}_{i1}", points=pts,
+                     start_yaw=self.start_yaw,
+                     end_yaw=self.end_yaw if end_yaw is None else end_yaw,
+                     created=self.created, spacing=self.spacing)
 
     def reversed(self) -> "Route":
         return Route(name=self.name + "_return", points=self.points[::-1],
@@ -87,6 +110,26 @@ class RouteRecorder:
         self.points: list[list[float]] = []
         self.yaws: list[float] = []
         self.latest: tuple[float, float, float, float] | None = None
+        self.stops: list[dict] = []
+
+    def mark_stop(self, name: str = "") -> dict:
+        """Tour stop at the current position. Turn G1 to face the exhibit first:
+        the current heading is stored and G1 turns that way when explaining."""
+        if self.latest is None:
+            raise ValueError("No odometry yet.")
+        x, y, z, yaw = self.latest
+        if not self.points or math.hypot(x - self.points[-1][0], y - self.points[-1][1]) > 0.01:
+            self.points.append([x, y, z])
+            self.yaws.append(yaw)
+        idx = len(self.points) - 1
+        if self.stops and idx - self.stops[-1]["index"] < 5:
+            raise ValueError("Too close to the previous stop (walk at least 0.5 m).")
+        name = (name or f"stop_{len(self.stops) + 1}").strip().replace(" ", "_")
+        title = name.replace("_", " ")
+        stop = {"index": idx, "name": name, "yaw": round(yaw, 4),
+                "title_en": title, "title_de": title, "text_en": "", "text_de": ""}
+        self.stops.append(stop)
+        return stop
 
     def add(self, x: float, y: float, z: float, yaw: float) -> bool:
         self.latest = (x, y, z, yaw)
@@ -115,7 +158,7 @@ class RouteRecorder:
         return Route(name=self.name, points=[[round(v, 4) for v in p] for p in self.points],
                      start_yaw=self.yaws[0], end_yaw=self.yaws[-1],
                      created=time.strftime("%Y-%m-%d %H:%M:%S"),
-                     spacing=self.spacing, **titles)
+                     spacing=self.spacing, stops=[dict(st) for st in self.stops], **titles)
 
 
 # ----------------------------------------------------------------------
@@ -131,7 +174,8 @@ class FollowParams:
     max_forward_mps: float = 0.25     # m/s at normalized 1.0 (server --max-forward)
     turn_in_place_deg: float = 40.0   # bigger heading error -> turn in place first
     turn_done_deg: float = 15.0
-    turn_speed: float = 0.7           # normalized yaw while turning in place
+    turn_rate: float = 0.21           # rad/s while turning in place / aligning (tested value)
+    follow_max_yaw_rate: float = 0.30 # rad/s cap while walking the route (tested value)
     goal_tolerance: float = 0.30      # m
     align_tolerance_deg: float = 10.0
     slow_down_dist: float = 1.0       # m before goal
@@ -145,7 +189,11 @@ class FollowParams:
     # Obstacle box in front of the robot (heading frame, origin at LiDAR).
     obstacle_ahead_min: float = 0.2
     obstacle_ahead_max: float = 1.2
-    obstacle_half_width: float = 0.40
+    # Corridor around the TAUGHT PATH (+-m). G1's body reaches ~0.23 m left/right of the
+    # taught line, so walls/door frames that G1 passed while teaching are always further
+    # away than 0.20 m (minus odometry drift). Anything nearer to the line is new.
+    obstacle_half_width: float = 0.20
+    obstacle_core_half_width: float = 0.15  # plus a narrow straight box right in front
     lidar_height: float = 1.21        # m above floor (Session 03: 1.21 m)
     obstacle_min_height: float = 0.25 # m above floor
     obstacle_max_height: float = 1.60
@@ -210,7 +258,63 @@ def obstacle_points_in_box(points: np.ndarray, pose_xyz, yaw: float, p: FollowPa
     return int(np.count_nonzero(band & box))
 
 
+def obstacle_points_on_path(points: np.ndarray, pose_xyz, yaw: float, path_xy: np.ndarray,
+                            p: FollowParams) -> int:
+    return int(np.count_nonzero(obstacle_mask_on_path(points, pose_xyz, yaw, path_xy, p)[0]))
+
+
+def obstacle_mask_on_path(points, pose_xyz, yaw: float, path_xy, p: FollowParams):
+    """Count points that are really in G1's way: in the height band, 0.2-1.2 m away,
+    in front, AND either close to the taught path ahead (corridor that bends with the
+    route, so walls / door frames beside a curve are ignored) or straight in front
+    of G1 (narrow core box)."""
+    if points is None or len(points) == 0:
+        return np.zeros(0, dtype=bool), {}
+    pts = np.asarray(points, dtype=float)[:, :3]
+    d = pts - np.asarray(pose_xyz, dtype=float)
+    c, s = math.cos(yaw), math.sin(yaw)
+    fwd = d[:, 0] * c + d[:, 1] * s
+    side = -d[:, 0] * s + d[:, 1] * c
+    height = d[:, 2] + p.lidar_height
+    dist = np.hypot(d[:, 0], d[:, 1])
+    cand = ((height > p.obstacle_min_height) & (height < p.obstacle_max_height)
+            & (dist > p.obstacle_ahead_min) & (dist < p.obstacle_ahead_max) & (fwd > 0.1))
+    info = {"fwd": fwd, "side": side, "height": height, "to_path": np.full(len(pts), np.inf)}
+    if not cand.any():
+        return np.zeros(len(pts), dtype=bool), info
+    core = cand & (np.abs(side) < p.obstacle_core_half_width)
+    on_path = np.zeros_like(cand)
+    if path_xy is not None and len(path_xy):
+        idx = np.nonzero(cand)[0]
+        q = pts[idx, :2]
+        path = np.asarray(path_xy, dtype=float)[:, :2]
+        nearest = np.min(np.hypot(q[:, None, 0] - path[None, :, 0],
+                                  q[:, None, 1] - path[None, :, 1]), axis=1)
+        on_path[idx] = nearest < p.obstacle_half_width
+        info["to_path"][idx] = nearest
+    return core | on_path, info
+
+
 class Follower:
+    def path_ahead(self, length: float = 1.6) -> np.ndarray:
+        """Taught route points from G1's current position up to `length` m ahead
+        (densified to 5 cm so the corridor has no gaps)."""
+        end = int(np.searchsorted(self.cum, self.cum[self.idx] + length)) + 1
+        seg = self.xy[self.idx:min(len(self.xy), end + 1)]
+        if len(seg) < 2:
+            return seg
+        out = [seg[0]]
+        for a, b in zip(seg[:-1], seg[1:]):
+            n = max(1, int(math.ceil(math.hypot(*(b - a)) / 0.05)))
+            out.extend(a + (b - a) * k / n for k in range(1, n + 1))
+        return np.asarray(out)
+
+    @property
+    def turn_norm(self) -> float:
+        """Normalized turn command giving p.turn_rate rad/s, whatever the server's
+        --max-yaw is (the joystick may allow faster turning than the guide)."""
+        return min(1.0, self.p.turn_rate / self.p.max_yaw_rate)
+
     def __init__(self, route: Route, p: FollowParams | None = None, align_end: bool = False):
         self.route = route
         self.p = p or FollowParams()
@@ -253,7 +357,7 @@ class Follower:
             if self.align_end:
                 err = wrap(self.route.end_yaw - yaw)
                 if abs(math.degrees(err)) > p.align_tolerance_deg:
-                    return Command(yaw=math.copysign(p.turn_speed, err), state="aligning",
+                    return Command(yaw=math.copysign(self.turn_norm, err), state="aligning",
                                    progress=1.0, message="Turning to the final direction")
             self.done = True
             return Command(state="arrived", progress=1.0)
@@ -274,7 +378,7 @@ class Follower:
                            message="Something is in front of me - waiting")
 
         if self.turning:
-            return Command(yaw=math.copysign(p.turn_speed, alpha), state="turning",
+            return Command(yaw=math.copysign(self.turn_norm, alpha), state="turning",
                            progress=progress)
 
         forward = p.cruise
@@ -282,5 +386,7 @@ class Follower:
             forward = max(p.min_forward, p.cruise * max(remaining, to_end) / p.slow_down_dist)
         v = forward * p.max_forward_mps
         omega = v * 2 * math.sin(alpha) / p.lookahead           # pure pursuit
+        cap = min(p.max_yaw_rate, p.follow_max_yaw_rate)
+        omega = max(-cap, min(cap, omega))
         yaw_norm = max(-1.0, min(1.0, omega / p.max_yaw_rate))
         return Command(x=forward, yaw=yaw_norm, state="following", progress=progress)

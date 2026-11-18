@@ -11,6 +11,8 @@ HTTP API (port 8002, reachable from the tablet):
     GET  /api/guide/status                -> current state / progress
     POST /api/guide/start  {"route": "coffee_machine", "lang": "en",
                             "return_home": true, "wait_s": 20}
+                           a route with stops (e.g. "lab_tour") runs as a lab tour:
+                           G1 stops, faces each exhibit and explains it
     POST /api/guide/cancel                -> stop now (robot stands still)
 
 Motion goes through the teleop server (port 8001) like the app joystick, so
@@ -33,6 +35,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guide_runner import GuideRunner  # noqa: E402
 from route_core import FollowParams, Route, SafetyError, yaw_from_quaternion  # noqa: E402
+from home_align import home_scan_path, load_home_scan  # noqa: E402
 
 ROUTES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "routes")
 
@@ -121,7 +124,10 @@ class Voice:
         self.base = base.rstrip("/")
 
     def say(self, text: str, lang: str) -> None:
-        http_json("POST", f"{self.base}/speak", {"text": text, "lang": lang, "queue": True})
+        return http_json("POST", f"{self.base}/speak", {"text": text, "lang": lang, "queue": True})
+
+    def stop(self) -> None:
+        http_json("POST", f"{self.base}/stop", {}, timeout=1.5)
 
 
 # ----------------------------------------------------------------------
@@ -129,6 +135,28 @@ class Voice:
 # ----------------------------------------------------------------------
 
 _PC2 = {1: "i1", 2: "u1", 3: "i2", 4: "u2", 5: "i4", 6: "u4", 7: "f4", 8: "f8"}
+
+
+def cloud_to_xyz(msg, max_points: int = 20000):
+    """sensor_msgs/PointCloud2 -> Nx3 float array (or None)."""
+    names = [f.name for f in msg.fields]
+    if not {"x", "y", "z"} <= set(names):
+        return None
+    dt = np.dtype({"names": names, "formats": [_PC2[f.datatype] for f in msg.fields],
+                   "offsets": [f.offset for f in msg.fields], "itemsize": msg.point_step})
+    a = np.frombuffer(msg.data, dtype=dt, count=msg.width * msg.height)
+    xyz = np.stack([a["x"], a["y"], a["z"]], axis=1).astype(np.float64)
+    xyz = xyz[np.isfinite(xyz).all(axis=1)]
+    if max_points and len(xyz) > max_points:
+        xyz = xyz[:: len(xyz) // max_points + 1]
+    return xyz
+
+
+def load_route(path: str) -> Route:
+    """Route + its HOME scan (if it was recorded with one) as route.home_xy."""
+    route = Route.load(path)
+    route.home_xy = load_home_scan(home_scan_path(path))
+    return route
 
 
 class RosSensors:
@@ -153,16 +181,9 @@ class RosSensors:
             self._pose = (time.monotonic(), p.x, p.y, p.z, yaw_from_quaternion(q.x, q.y, q.z, q.w))
 
     def _on_cloud(self, msg) -> None:
-        names = [f.name for f in msg.fields]
-        if not {"x", "y", "z"} <= set(names):
+        xyz = cloud_to_xyz(msg)
+        if xyz is None:
             return
-        dt = np.dtype({"names": names, "formats": [_PC2[f.datatype] for f in msg.fields],
-                       "offsets": [f.offset for f in msg.fields], "itemsize": msg.point_step})
-        a = np.frombuffer(msg.data, dtype=dt, count=msg.width * msg.height)
-        xyz = np.stack([a["x"], a["y"], a["z"]], axis=1).astype(np.float64)
-        xyz = xyz[np.isfinite(xyz).all(axis=1)]
-        if len(xyz) > 20000:
-            xyz = xyz[:: len(xyz) // 20000 + 1]
         with self._lock:
             self._points = xyz
 
@@ -187,7 +208,11 @@ def list_routes(folder: str) -> list[dict]:
                 try:
                     r = Route.load(os.path.join(folder, name))
                     out.append({"name": r.name, "title_en": r.title_en, "title_de": r.title_de,
-                                "length_m": round(r.length, 1), "created": r.created})
+                                "home_scan": os.path.isfile(home_scan_path(os.path.join(folder, name))),
+                                "length_m": round(r.length, 1), "created": r.created,
+                                "kind": "tour" if r.stops else "route",
+                                "stops": [{"name": st.get("name"), "title_en": st.get("title_en"),
+                                           "title_de": st.get("title_de")} for st in r.stops]})
                 except Exception:
                     pass
     return out
@@ -249,7 +274,7 @@ class GuideService:
         path = os.path.join(self.routes_dir, f"{name}.json")
         if not name or not os.path.isfile(path):
             return False, f"Unknown route '{name}'."
-        route = Route.load(path)
+        route = load_route(path)
         try:
             self.runner.preflight()
         except SafetyError as exc:
@@ -272,6 +297,12 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8002)
     ap.add_argument("--odom-topic", default="/Odometry")
     ap.add_argument("--cloud-topic", default="/cloud_registered")
+    ap.add_argument("--obstacle-half-width", type=float, default=None,
+                    help="m left/right of the path that must be free (default 0.40)")
+    ap.add_argument("--obstacle-min-height", type=float, default=None,
+                    help="ignore points lower than this above the floor (default 0.25)")
+    ap.add_argument("--obstacle-min-points", type=int, default=None,
+                    help="points needed to count as blocked (default 8)")
     args = ap.parse_args()
 
     pin = os.environ.get("G1_TELEOP_PIN", "")
@@ -287,6 +318,15 @@ def main() -> int:
     except Exception as exc:
         print(f"[guide] WARNING: teleop server not reachable yet ({exc})")
     print(f"[guide] speed limits: {params.max_forward_mps} m/s, {params.max_yaw_rate} rad/s")
+    for name in ("obstacle_half_width", "obstacle_min_height", "obstacle_min_points"):
+        val = getattr(args, name)
+        if val is None:
+            env = os.environ.get("G1_GUIDE_" + name.upper())
+            val = (int(env) if name.endswith("points") else float(env)) if env else None
+        if val is not None:
+            setattr(params, name, val)
+    print(f"[guide] obstacle box: +-{params.obstacle_half_width} m, from {params.obstacle_min_height} m high, "
+          f">= {params.obstacle_min_points} points")
 
     sensors = RosSensors(args.odom_topic, args.cloud_topic)
     runner = GuideRunner(motion, sensors, Voice(args.voice), params)

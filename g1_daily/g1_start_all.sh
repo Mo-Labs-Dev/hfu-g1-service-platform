@@ -17,7 +17,7 @@ TOKEN_FILE=~/.g1_bridge_token
 
 # Robot settings (change here if needed)
 MAX_FORWARD=0.25
-MAX_YAW=0.30
+MAX_YAW=0.8      # joystick turn speed (server max 0.8); the guide keeps its own tested 0.21-0.30 rad/s
 VOICE_EN=en_US-ryan-medium.onnx
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[0;33m'; NC='\033[0m'

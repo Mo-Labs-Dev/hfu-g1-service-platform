@@ -20,7 +20,7 @@ FSM 500, E-stop apply. App STOP / E-STOP cancels a guide.
 ## Safety behaviour of the guide
 - refuses to start: no FSM 500, E-stop, joystick in use, gesture running,
   no live odometry, not on the home spot (>0.6 m / >25°)
-- stops & waits if something is 0.2–1.2 m in front (0.25–1.6 m high);
+- stops & waits if something is ON THE TAUGHT PATH 0.2–1.2 m ahead (±0.30 m corridor that bends with the route, plus ±0.15 m straight in front; 0.25–1.6 m high) - walls and door frames beside the route are ignored;
   asks "please let me pass" after 6 s; gives up after 90 s
 - aborts: odometry stale >2 s, odometry jump >0.4 m, height drift >0.5 m
   (FAST-LIO runaway), >0.8 m off the taught route, robot leaves FSM 500
@@ -38,3 +38,34 @@ FSM 500, E-stop apply. App STOP / E-STOP cancels a guide.
    → drive to the destination slowly, stop, Ctrl+C.
 7. Drive back to HOME, restart FAST-LIO, then start the guide service and try it.
    Restart FAST-LIO on HOME before each guiding session.
+
+## Lab tour (several stops, G1 explains each one)
+A tour is one taught route with **stops** marked while teaching.
+1. G1 on HOME, FAST-LIO restarted on HOME (as above).
+2. `python3 route_tool.py record lab_tour --tour --title-en "HFU lab tour" --title-de "HFU Laborführung"`
+3. Drive slowly through the lab. At each exhibit: stop, **turn G1 to face the
+   exhibit**, type a short name (e.g. `3d_printer`) in the terminal, press Enter.
+4. Finish back on HOME, facing the start direction, then Ctrl+C.
+   (Tour ends on HOME = loop → G1 needs no extra way back.)
+5. `python3 route_tool.py stops lab_tour` → see the stops
+6. `python3 route_tool.py stop-text lab_tour 1 --title-en "3D printer" --title-de "3D-Drucker" --text-en "..." --text-de "..."`
+   (empty text → "Here you can see the <title>.")
+
+When guiding a tour G1: welcomes → walks to stop 1 → turns to the exhibit →
+explains → "Let's continue" → … → back on HOME → "Thank you for visiting".
+Same safety rules as a normal guide. Visitor says "give me a lab tour" /
+"zeig mir das Labor" in Talk to G1, or `POST /api/guide/start {"route": "lab_tour"}`.
+Keep tours to ~4–6 stops and under ~60 m; check the drift at the end like for routes.
+
+## Automatic HOME alignment (18 Nov)
+Routes are stored in the FAST-LIO frame of the teaching run (origin = where G1
+stood). A few degrees of placement error rotate the whole route (5° ≈ 0.9 m at
+10 m). Now:
+- `record` keeps G1 still for 3 s at the start and saves `routes/NAME.home.npz`
+  (2D wall slice 0.3–2.2 m high, 5 cm voxels).
+- Before every guide/tour the guide collects 2.5 s of scans at HOME, matches them
+  to the saved scan (2D ICP, numpy only) and converts poses + points into the
+  teaching frame. Result is in `GET /api/guide/status` → `alignment`
+  (dx, dy, dyaw_deg, fit) – log it for the thesis.
+- Refuses to start if the match is poor (< 45 %), > 1 m or > 20° off.
+- Routes recorded before 18 Nov have no HOME scan → run unchanged (re-record them).

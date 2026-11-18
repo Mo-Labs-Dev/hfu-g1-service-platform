@@ -38,7 +38,9 @@ echo; echo "=== 3/3  Guide service (port 8002) ==="
 if running "guide_service.py"; then
   echo -e "  ${YEL}•${NC} already running"
 elif [ -f "$PIN_FILE" ]; then
-  docker exec -d -e G1_TELEOP_PIN="$(cat "$PIN_FILE")" "$CONTAINER" \
+  # Optional tuning: export G1_GUIDE_OBSTACLE_HALF_WIDTH=0.15 before running this script.
+  docker exec -d -e G1_TELEOP_PIN="$(cat "$PIN_FILE")" \
+    -e G1_GUIDE_OBSTACLE_HALF_WIDTH="${G1_GUIDE_OBSTACLE_HALF_WIDTH:-}" "$CONTAINER" \
     bash -lc "$ROS && python3 -u $TR/guide_service.py > /tmp/g1_guide.log 2>&1"
   echo -e "  ${GREEN}✔${NC} started (log /tmp/g1_guide.log)"; sleep 4
 else

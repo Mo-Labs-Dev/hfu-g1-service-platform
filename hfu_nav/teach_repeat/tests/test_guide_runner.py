@@ -41,8 +41,9 @@ class World:
     def points(self):
         if self.obstacle and self.obstacle[0] <= self.t < self.obstacle[1]:
             c, s = math.cos(self.yaw), math.sin(self.yaw)
-            return np.array([[self.x + 0.8 * c - k * 0.05 * s, self.y + 0.8 * s + k * 0.05 * c, -0.6]
-                             for k in range(-5, 6)])
+            # a person: 0.5 m wide, points at 3 heights (a real scan has many more)
+            return np.array([[self.x + 0.8 * c - k * 0.05 * s, self.y + 0.8 * s + k * 0.05 * c, h]
+                             for k in range(-5, 6) for h in (-0.9, -0.6, -0.3)])
         return np.zeros((0, 3))
     # voice
     def say(self, text, lang): self.said.append(text)
