@@ -7,8 +7,17 @@ import { useEffect, useState } from "react";
 import { postJson, sendJson } from "@/lib/g1api";
 import type { MapRoute, MapStop } from "@/components/studio/LabMapCanvas";
 
+const GESTURES: [string, string][] = [
+  ["none", "No gesture"],
+  ["high_wave", "Wave"],
+  ["face_wave", "Wave (near face)"],
+  ["clap", "Clap"],
+  ["heart", "Heart"],
+  ["two_hand_kiss", "Kiss"],
+];
+
 type Props = {
-  route: MapRoute & { intro_en?: string; intro_de?: string };
+  route: MapRoute & { intro_en?: string; intro_de?: string; gesture_start?: string; gesture_end?: string };
   color: string;
   withPin: (run: (pin: string) => Promise<void>) => Promise<void>;
   onSaved: () => Promise<void> | void;
@@ -211,6 +220,8 @@ export default function TourEditor({ route, color, withPin, onSaved, flash, onHo
     title_de: route.title_de || "",
     intro_en: route.intro_en || "",
     intro_de: route.intro_de || "",
+    gesture_start: route.gesture_start || "high_wave",
+    gesture_end: route.gesture_end || "face_wave",
   });
   const [open, setOpen] = useState(false);
   const { translate, busy } = useTranslate(flash);
@@ -221,14 +232,18 @@ export default function TourEditor({ route, color, withPin, onSaved, flash, onHo
       title_de: route.title_de || "",
       intro_en: route.intro_en || "",
       intro_de: route.intro_de || "",
+      gesture_start: route.gesture_start || "high_wave",
+      gesture_end: route.gesture_end || "face_wave",
     });
-  }, [route.name, route.title_en, route.title_de, route.intro_en, route.intro_de]);
+  }, [route.name, route.title_en, route.title_de, route.intro_en, route.intro_de, route.gesture_start, route.gesture_end]);
 
   const dirty =
     meta.title_en !== (route.title_en || "") ||
     meta.title_de !== (route.title_de || "") ||
     meta.intro_en !== (route.intro_en || "") ||
-    meta.intro_de !== (route.intro_de || "");
+    meta.intro_de !== (route.intro_de || "") ||
+    meta.gesture_start !== (route.gesture_start || "high_wave") ||
+    meta.gesture_end !== (route.gesture_end || "face_wave");
 
   async function saveMeta() {
     await withPin(async (pin) => {
@@ -283,6 +298,26 @@ export default function TourEditor({ route, color, withPin, onSaved, flash, onHo
             value={meta.intro_de}
             onChange={(e) => setMeta({ ...meta, intro_de: e.target.value })}
           />
+          {isTour && (
+            <div className="grid grid-cols-2 gap-2">
+              {(["gesture_start", "gesture_end"] as const).map((k) => (
+                <label key={k} className="text-[11px] font-semibold text-[#566373]">
+                  {k === "gesture_start" ? "Gesture at the welcome" : "Gesture at the goodbye"}
+                  <select
+                    value={meta[k]}
+                    onChange={(e) => setMeta({ ...meta, [k]: e.target.value })}
+                    className={`${FIELD} mt-1 bg-white`}
+                  >
+                    {GESTURES.map(([v, label]) => (
+                      <option key={v} value={v}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          )}
           <div className="flex justify-between">
             <button className={SMALL_BTN} disabled={busy} onClick={() => void fillDe()}>
               {busy ? "Translating…" : "Translate EN → DE"}

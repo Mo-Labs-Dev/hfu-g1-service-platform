@@ -36,6 +36,8 @@ export type MapRoute = {
   stops: MapStop[];
   intro_en?: string;
   intro_de?: string;
+  gesture_start?: string;
+  gesture_end?: string;
 };
 
 export type Pose = { x: number; y: number; yaw: number };

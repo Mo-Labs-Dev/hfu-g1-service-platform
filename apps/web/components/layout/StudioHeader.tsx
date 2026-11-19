@@ -29,6 +29,10 @@ const navigation = [
     href: "/studio/evaluation",
   },
   {
+    label: "Safety Tests",
+    href: "/studio/safety",
+  },
+  {
     label: "Workflows",
     href: "/studio/workflows",
   },

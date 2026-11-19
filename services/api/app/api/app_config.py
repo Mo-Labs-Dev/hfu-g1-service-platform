@@ -43,6 +43,13 @@ async def put_config(body: ConfigBody):
     return {**cfg, "clients": len(manager.active_connections)}
 
 
+@router.get("/battery")
+async def battery():
+    """Battery level for the apps (also pushed as {"type": "battery"} over /ws)."""
+    from app.services.battery_watch import watch
+    return watch.state()
+
+
 @router.get("/clients")
 async def clients():
     """How many apps / pages are connected to the live channel right now."""

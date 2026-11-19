@@ -79,3 +79,16 @@ def test_tour_editing(tmp_path):
         m.update_stop("tour", "zzz", {})
     with pytest.raises(ValueError):
         m.update_stop("../etc", "a", {})
+
+
+def test_tour_gesture_edit(tmp_path):
+    m = lm(tmp_path)
+    (tmp_path / "routes").mkdir()
+    json.dump({"name": "tour", "points": [[0, 0, 0], [1, 0, 0]], "stops": [{"index": 1, "name": "a"}]},
+              open(tmp_path / "routes" / "tour.json", "w"))
+    m.update_route("tour", {"gesture_start": "clap", "gesture_end": "none"})
+    d = json.load(open(tmp_path / "routes" / "tour.json"))
+    assert d["gesture_start"] == "clap" and d["gesture_end"] == "none"
+    assert m.routes()[0]["gesture_start"] == "clap"
+    with pytest.raises(ValueError):
+        m.update_route("tour", {"gesture_start": "backflip"})

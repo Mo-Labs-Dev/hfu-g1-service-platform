@@ -28,6 +28,7 @@ VISION = _url("G1_VISION_URL", 8003)
 VOICE = _url("G1_VOICE_URL", 8766)
 STATUS_BRIDGE = _url("G1_STATUS_BRIDGE_URL", 8767)
 CAMERA = _url("G1_CAMERA_URL", 8770)
+TELEMETRY = _url("G1_TELEMETRY_URL", 8004)
 OLLAMA = _url("G1_OLLAMA_URL", 11434)
 
 
@@ -113,6 +114,13 @@ def _status_bridge(d):
     return True, "ready"
 
 
+def _telemetry(d):
+    b = (d or {}).get("battery") or {}
+    if b.get("soc") is None:
+        return False, "no battery data yet"
+    return True, f"battery {b['soc']:.0f} %"
+
+
 def _ollama(d):
     models = [m.get("name") for m in (d or {}).get("models", [])]
     return bool(models), ", ".join(models[:4]) if models else "no models"
@@ -125,7 +133,8 @@ SERVICES = [
     ("voice", "Voice bridge (Piper)", 8766, f"{VOICE}/status", _voice, True),
     ("status_bridge", "Status bridge", 8767, f"{STATUS_BRIDGE}/status", _status_bridge, False),
     ("ollama", "Local AI (Ollama)", 11434, f"{OLLAMA}/api/tags", _ollama, True),
-    ("vision", "Vision service (beta)", 8003, f"{VISION}/api/vision/status", _vision, False),
+    ("vision", "Vision service", 8003, f"{VISION}/api/vision/status", _vision, False),
+    ("telemetry", "Telemetry (battery, motors)", 8004, f"{TELEMETRY}/api/telemetry", _telemetry, False),
 ]
 
 _pool = ThreadPoolExecutor(max_workers=8)
@@ -219,3 +228,15 @@ def vision_cancel() -> tuple[int, object]:
 
 def vision_objects():
     return get_json(f"{VISION}/api/vision/objects", timeout=2)
+
+
+def telemetry():
+    return get_json(f"{TELEMETRY}/api/telemetry", timeout=2)
+
+
+def telemetry_speed(since: float):
+    return get_json(f"{TELEMETRY}/api/telemetry/speed?since={since:.3f}", timeout=2)
+
+
+def guide_status():
+    return get_json(f"{GUIDE}/api/guide/status", timeout=1.0)

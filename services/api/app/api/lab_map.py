@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.services import content_service, robot_hub
 from app.services.lab_map_service import lab_map
+from app.services.cloud3d_service import cloud3d
 from app.services.robot_hub import HubError
 from app.services.system_control import system_control
 
@@ -48,6 +49,41 @@ async def image():
     return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
 
+# ------------------------------------------------------------------ 3D LiDAR map
+@router.get("/cloud3d.bin")
+async def cloud3d_bin():
+    try:
+        blob, meta = await run_in_threadpool(cloud3d.blob)
+    except OSError as exc:
+        raise HTTPException(503, f"Map files missing: {exc}")
+    return Response(content=blob, media_type="application/octet-stream",
+                    headers={"X-Points": str(meta["points"]), "X-Source": meta["source"],
+                             "Cache-Control": "no-cache"})
+
+
+@router.get("/cloud3d/info")
+async def cloud3d_info():
+    try:
+        return await run_in_threadpool(cloud3d.info)
+    except OSError as exc:
+        raise HTTPException(503, f"Map files missing: {exc}")
+
+
+class BuildBody(BaseModel):
+    pin: str = ""
+    pcd: str | None = None
+    voxel: float = 0.10
+
+
+@router.post("/cloud3d/build")
+async def cloud3d_build(body: BuildBody):
+    _pin(body.pin)
+    try:
+        return await run_in_threadpool(cloud3d.build, body.pcd, max(0.05, min(body.voxel, 0.5)))
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
 @router.get("/routes")
 async def routes():
     return await run_in_threadpool(lab_map.routes)
@@ -84,6 +120,8 @@ class RouteEdit(BaseModel):
     title_de: str | None = None
     intro_en: str | None = None
     intro_de: str | None = None
+    gesture_start: str | None = None
+    gesture_end: str | None = None
 
 
 class StopEdit(BaseModel):

@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiBase, getJson, sendJson } from "@/lib/g1api";
 import { usePin } from "@/components/studio/usePin";
+import FeedbackSection from "@/components/studio/FeedbackSection";
 
 type Run = {
   id: string;
@@ -265,6 +266,8 @@ export default function EvaluationPage() {
             </table>
           </section>
         </div>
+
+        <FeedbackSection />
 
         {/* table */}
         <section className="overflow-x-auto rounded-lg border border-[#d8dde1] bg-white">

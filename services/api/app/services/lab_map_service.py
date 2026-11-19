@@ -256,6 +256,8 @@ class LabMap:
             out.append({
                 "name": name, "title_en": r.get("title_en", ""), "title_de": r.get("title_de", ""),
                 "intro_en": r.get("arrival_en", ""), "intro_de": r.get("arrival_de", ""),
+                "gesture_start": r.get("gesture_start", "high_wave"),
+                "gesture_end": r.get("gesture_end", "face_wave"),
                 "kind": "tour" if r.get("stops") else "route", "created": r.get("created", ""),
                 "length_m": round(length, 1), "home_scan": os.path.isfile(
                     os.path.join(self.routes_dir, f"{name}.home.npz")),
@@ -268,6 +270,7 @@ class LabMap:
 
     # ------------------------------------------------------------ editing (tour editor)
     TEXT_FIELDS = ("title_en", "title_de", "text_en", "text_de")
+    TOUR_GESTURES = ("none", "high_wave", "face_wave", "clap", "heart", "two_hand_kiss")
     MAX_TEXT = 600
 
     def _route_path(self, name: str) -> str:
@@ -304,6 +307,12 @@ class LabMap:
             for k, target in mapping.items():
                 if k in fields and fields[k] is not None:
                     data[target] = self._clean(fields[k])
+            for k in ("gesture_start", "gesture_end"):
+                v = fields.get(k)
+                if v is not None:
+                    if v not in self.TOUR_GESTURES:
+                        raise ValueError(f"Unknown gesture '{v}'.")
+                    data[k] = v
             self._rewrite(path, data)
         return {"ok": True}
 

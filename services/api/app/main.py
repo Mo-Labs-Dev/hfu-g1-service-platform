@@ -16,6 +16,10 @@ from app.api.lab_map import router as lab_map_router
 from app.api.runs import router as runs_router
 from app.api.sim import router as sim_router
 from app.api.app_config import router as app_config_router
+from app.api.dashboard import router as dashboard_router
+from app.api.feedback import router as feedback_router
+from app.api.safety import router as safety_router
+from app.api.attract import router as attract_router
 from app.api.websocket import manager, router as websocket_router
 from app.api.visitor_safety import router as visitor_safety_router
 from app.api.visitor_welcome import router as visitor_welcome_router
@@ -77,6 +81,14 @@ async def lifespan(app: FastAPI):
         await visitor_camera_service.start()
         await visitor_speech_service.start()
 
+    # Battery warnings (G1 speaks + apps show a warning), see services/battery_watch.py
+    import asyncio
+    from app.services import battery_watch
+    battery_task = asyncio.create_task(battery_watch.run_forever())
+    # Attract mode (off by default, switched on in Studio -> Visitor App)
+    from app.services import attract_service
+    attract_task = asyncio.create_task(attract_service.run_forever())
+
     print("[G1 Platform] Backend started")
     if AUTO_WELCOME:
         print("[G1 Platform] Visitor camera worker started")
@@ -90,6 +102,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        battery_task.cancel()
+        attract_task.cancel()
         await guidance_service.shutdown()
         if AUTO_WELCOME:
             await visitor_speech_service.stop()
@@ -138,6 +152,10 @@ app.include_router(lab_map_router)
 app.include_router(runs_router)
 app.include_router(sim_router)
 app.include_router(app_config_router)
+app.include_router(dashboard_router)
+app.include_router(feedback_router)
+app.include_router(safety_router)
+app.include_router(attract_router)
 
 
 @app.get("/api/health")

@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getJson, postJson, sendJson } from "@/lib/g1api";
 import { usePin } from "@/components/studio/usePin";
+import AttractCard from "@/components/studio/AttractCard";
 
 type AppConfig = {
   version: number;
@@ -75,6 +76,24 @@ export default function VisitorAppPage() {
       setBusy(false);
       setTimeout(() => setMessage(null), 6000);
     }
+  }
+
+  async function withPin(run: (pin: string) => Promise<void>) {
+    const pin = await ensurePin();
+    if (!pin) return;
+    try {
+      await run(pin);
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      if (/PIN/i.test(text)) forgetPin();
+      setMessage({ text, error: true });
+      setTimeout(() => setMessage(null), 6000);
+    }
+  }
+
+  function flash(text: string, error = false) {
+    setMessage({ text, error });
+    setTimeout(() => setMessage(null), 6000);
   }
 
   async function translate() {
@@ -255,6 +274,7 @@ export default function VisitorAppPage() {
             texts are edited on the Lab Map and also update the app live.
           </p>
         </section>
+        <AttractCard withPin={withPin} flash={flash} />
       </div>
     </div>
   );

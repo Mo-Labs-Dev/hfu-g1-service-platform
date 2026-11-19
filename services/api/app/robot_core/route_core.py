@@ -51,6 +51,9 @@ class Route:
     # Lab tour: stops marked while teaching. Each stop:
     # {"index": point index, "name", "yaw", "title_en", "title_de", "text_en", "text_de"}
     stops: list[dict] = field(default_factory=list)
+    # Tour gestures (teleop gesture names, "none" = off): wave at the welcome, goodbye at the end.
+    gesture_start: str = "high_wave"
+    gesture_end: str = "face_wave"
 
     @property
     def xy(self) -> np.ndarray:

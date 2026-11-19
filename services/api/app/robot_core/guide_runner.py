@@ -281,7 +281,8 @@ class GuideRunner:
             Follower(route, self.p).check_start(pose[1], pose[2], pose[4])
             self.motion.begin()
             say_s = self._say("tour_start", lang, title, custom=(route.arrival_de if de else route.arrival_en) or "")
-            if not self._wait(min(say_s, 8.0)):
+            waved = self._gesture(getattr(route, "gesture_start", "high_wave"))   # wave while welcoming
+            if not self._wait(max(min(say_s, 8.0), self.GESTURE_HOLD if waved else 0.0)):
                 return self.status.state
             i0 = 0
             for k, st in enumerate(stops, start=1):
@@ -314,9 +315,13 @@ class GuideRunner:
                     return result
             if route.is_loop or not return_home:
                 self._say("tour_end", lang)
+                if self._gesture(getattr(route, "gesture_end", "face_wave")):
+                    self._wait(self.GESTURE_HOLD)                   # goodbye gesture
                 self._set(state="done", progress=1.0, message="Tour finished" + (" - back home" if route.is_loop else ""))
                 return "done"
             self._say("tour_end", lang)
+            if self._gesture(getattr(route, "gesture_end", "face_wave")):
+                self._wait(self.GESTURE_HOLD)
             self._set(state="returning", stop_title="", message="Going back home")
             result = self._follow(route.reversed(), leg="back", lang=lang, align_end=True)
             if result == "arrived":
@@ -336,6 +341,19 @@ class GuideRunner:
                 pass
 
     # ------------------------------------------------------------------
+    GESTURE_HOLD = 4.0          # s the guide waits while an arm gesture plays
+
+    def _gesture(self, name: str) -> bool:
+        """Arm gesture through the teleop lease (G1 stands still). Never blocks the tour."""
+        if not name or name == "none" or not hasattr(self.motion, "gesture"):
+            return False
+        try:
+            self.motion.gesture(name)
+            return True
+        except Exception as exc:
+            print(f"[guide] gesture '{name}' skipped: {exc}")
+            return False
+
     def _wait(self, seconds: float) -> bool:
         end = self.clock() + seconds
         while self.clock() < end:
