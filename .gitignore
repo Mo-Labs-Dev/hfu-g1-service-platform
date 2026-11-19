@@ -29,3 +29,8 @@ out/
 
 # Local robot model source repository
 /robot-model/unitree_ros/
+# voice models (large, on the robot)
+*.onnx
+*.onnx.json
+# local databases (visitor data)
+services/api/data/*.db

@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,10 @@ from app.api.navigation import router as navigation_router
 from app.api.physical_robot import router as physical_robot_router
 from app.api.vision import router as vision_router
 from app.api.workflows import router as workflows_router
+from app.api.mission import router as mission_router
+from app.api.lab_map import router as lab_map_router
+from app.api.runs import router as runs_router
+from app.api.sim import router as sim_router
 from app.api.websocket import manager, router as websocket_router
 from app.api.visitor_safety import router as visitor_safety_router
 from app.api.visitor_welcome import router as visitor_welcome_router
@@ -29,6 +34,11 @@ from app.services.visitor_speech_service import (
     visitor_speech_service,
 )
 from app.tasks.engine import TaskEngine
+
+
+# Automatic camera welcome (person detected -> G1 greets + app shows welcome).
+# Off by default. Start the backend with G1_AUTO_WELCOME=1 to enable it.
+AUTO_WELCOME = os.getenv("G1_AUTO_WELCOME", "0") == "1"
 
 
 async def handle_task_event(event: dict) -> None:
@@ -62,12 +72,16 @@ async def lifespan(app: FastAPI):
     app.state.visitor_speech_service = visitor_speech_service
     app.state.visitor_guidance_service = guidance_service
 
-    await visitor_camera_service.start()
-    await visitor_speech_service.start()
+    if AUTO_WELCOME:
+        await visitor_camera_service.start()
+        await visitor_speech_service.start()
 
     print("[G1 Platform] Backend started")
-    print("[G1 Platform] Visitor camera worker started")
-    print("[G1 Platform] Visitor speech dispatcher started")
+    if AUTO_WELCOME:
+        print("[G1 Platform] Visitor camera worker started")
+        print("[G1 Platform] Visitor speech dispatcher started")
+    else:
+        print("[G1 Platform] Automatic camera welcome OFF (set G1_AUTO_WELCOME=1 to enable)")
     print("[G1 Platform] Hybrid workflow adapter ready")
     print("[G1 Platform] Physical speech enabled")
     print("[G1 Platform] Navigation remains simulated")
@@ -76,8 +90,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await guidance_service.shutdown()
-        await visitor_speech_service.stop()
-        await visitor_camera_service.stop()
+        if AUTO_WELCOME:
+            await visitor_speech_service.stop()
+            await visitor_camera_service.stop()
         await robot.disconnect()
         await close_database()
         print("[G1 Platform] Backend stopped")
@@ -99,6 +114,8 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ],
+    # Studio opened from another PC in the lab network (e.g. http://10.150.68.160:3000)
+    allow_origin_regex=r"http://(10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -115,6 +132,10 @@ app.include_router(visitor_safety_router)
 app.include_router(vision_router)
 app.include_router(visitor_welcome_router)
 app.include_router(visitor_guidance_router)
+app.include_router(mission_router)
+app.include_router(lab_map_router)
+app.include_router(runs_router)
+app.include_router(sim_router)
 
 
 @app.get("/api/health")

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.services.interaction_service import interaction_service
@@ -22,6 +24,8 @@ transcription_lock = asyncio.Lock()
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
     speak: bool = False
+    # Language chosen in the app ("en" / "de"); None = follow the visitor.
+    language: Literal["en", "de"] | None = None
     session_id: str | None = Field(default=None, min_length=36, max_length=36)
 
 
@@ -31,6 +35,7 @@ class AskResponse(BaseModel):
     model: str
     speech_accepted: bool
     speech_error: str | None = None
+    speech_ends_in_ms: int | None = None
     session_id: str
     history_messages: int
 
@@ -54,6 +59,7 @@ async def ask_g1(request: AskRequest):
             question=request.question,
             speak=request.speak,
             session_id=request.session_id,
+            language=request.language,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

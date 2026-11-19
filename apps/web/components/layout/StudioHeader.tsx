@@ -9,6 +9,22 @@ const navigation = [
     href: "/studio",
   },
   {
+    label: "Mission Control",
+    href: "/studio/mission",
+  },
+  {
+    label: "Lab Map",
+    href: "/studio/lab-map",
+  },
+  {
+    label: "Simulation",
+    href: "/studio/simulation",
+  },
+  {
+    label: "Evaluation",
+    href: "/studio/evaluation",
+  },
+  {
     label: "Workflows",
     href: "/studio/workflows",
   },
