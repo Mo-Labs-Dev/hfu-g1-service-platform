@@ -129,3 +129,25 @@ def test_guide_turns_at_tested_speed_even_if_joystick_is_faster():
     w = World(); w.p = fast; g = runner(w)
     assert g.run(loop_tour(), "en") == "done"
     assert math.hypot(w.x, w.y) < 0.35
+
+
+def test_every_run_is_logged():
+    w = World(); g = runner(w)
+    log = []
+    g.run_logger = log.append
+    g.run(loop_tour(), "de")
+    r = log[-1]
+    assert r["route"] == "lab_tour" and r["kind"] == "tour" and r["result"] == "done"
+    assert r["lang"] == "de" and r["stops"] == 2 and r["duration_s"] > 10 and r["length_m"] > 13
+    assert r["blocked_count"] == 0 and "started" in r
+
+
+def test_blocked_time_and_place_logged():
+    from test_route_core import l_route
+    w = World(); w.obstacle = (1005.0, 1017.0); g = runner(w)
+    log = []
+    g.run_logger = log.append
+    g.run(l_route(), "en", return_home=False)
+    r = log[-1]
+    assert r["result"] == "done" and r["blocked_count"] >= 1 and r["blocked_s"] > 5
+    assert len(r["blocked_at"][0]) == 2

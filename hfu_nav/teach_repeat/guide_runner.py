@@ -166,7 +166,50 @@ class GuideRunner:
 
     def run(self, route: Route, lang: str = "en", return_home: bool = True,
             wait_s: float = 20.0) -> str:
-        """Blocking. Returns final state."""
+        """Blocking. Returns final state. Every run is written to the run log
+        (self.run_logger, set by the guide service) for G1 Studio / the thesis."""
+        t_wall, t0 = time.time(), self.clock()
+        self._blocked_events = []
+        h0 = len(self.status.history)
+        result = "error"
+        try:
+            result = self._run_impl(route, lang, return_home, wait_s)
+            return result
+        finally:
+            self._log_run(route, lang, return_home, result, t_wall, t0, h0)
+
+    def _log_run(self, route, lang, return_home, result, t_wall, t0, h0) -> None:
+        logger = getattr(self, "run_logger", None)
+        if logger is None:
+            return
+        hist = self.status.history[h0:]
+        blocked_s, since = 0.0, None
+        for t, state, _msg in hist:
+            if state == "blocked" and since is None:
+                since = t
+            elif state != "blocked" and since is not None:
+                blocked_s += t - since
+                since = None
+        if since is not None:
+            blocked_s += self.clock() - since
+        length = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(route.points, route.points[1:]))
+        record = {
+            "started": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t_wall)),
+            "route": route.name, "kind": "tour" if route.stops else "route", "lang": lang,
+            "return_home": bool(return_home), "result": result,
+            "duration_s": round(self.clock() - t0, 1), "length_m": round(length, 1),
+            "stops": len(route.stops), "progress": round(self.status.progress, 3),
+            "blocked_count": len(self._blocked_events), "blocked_s": round(blocked_s, 1),
+            "blocked_at": self._blocked_events[:50], "message": self.status.message,
+            "alignment": dict(self.status.alignment or {}),
+        }
+        try:
+            logger(record)
+        except Exception as exc:                      # logging must never break guiding
+            print(f"[guide] run log failed: {exc}")
+
+    def _run_impl(self, route: Route, lang: str = "en", return_home: bool = True,
+                  wait_s: float = 20.0) -> str:
         lang = lang if lang in ("en", "de") else "en"
         if route.stops:
             return self.run_tour(route, lang, return_home=return_home)
@@ -359,6 +402,10 @@ class GuideRunner:
                 self.motion.send(0.0, 0.0)
                 return "arrived"
             if cmd.state == "blocked":
+                if blocked_since is None:
+                    events = getattr(self, "_blocked_events", None)
+                    if events is not None:
+                        events.append([round(x, 2), round(y, 2)])     # teaching frame of the route
                 blocked_since = blocked_since or now
                 waited = now - blocked_since
                 self._set(state="blocked", progress=progress0 + progress_span * cmd.progress,

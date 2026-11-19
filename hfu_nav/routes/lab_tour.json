@@ -1662,7 +1662,7 @@
  "created": "2026-11-18 10:49:00",
  "spacing": 0.1,
  "title_en": "HFU lab tour",
- "title_de": "HFU Laborf\u00fchrung",
+ "title_de": "HFU Laborführung",
  "arrival_en": "",
  "arrival_de": "",
  "stops": [
@@ -1672,8 +1672,8 @@
    "yaw": -0.6933,
    "title_en": "Yaskawa robot",
    "title_de": "Yaskawa-Roboter",
-   "text_en": "This is our Yaskawa industrial robot. Robots like this work in factories for welding, assembly and pick and place tasks. Here our students learn how to program industrial robots.",
-   "text_de": "Das ist unser Yaskawa Industrieroboter. Solche Roboter arbeiten in Fabriken beim Schwei\u00dfen, Montieren und Sortieren. Hier lernen unsere Studierenden, wie man Industrieroboter programmiert."
+   "text_en": "This is our Yaskawa industrial robot. Robots like this work in factories for welding, assembly and pick and place tasks.",
+   "text_de": "Das ist unser Yaskawa Industrieroboter. Solche Roboter arbeiten in Fabriken beim Schweißen, Montieren und Sortieren. Hier lernen unsere Studierenden, wie man Industrieroboter programmiert."
   },
   {
    "index": 170,
@@ -1682,7 +1682,7 @@
    "title_en": "3D printer",
    "title_de": "3D-Drucker",
    "text_en": "This is our 3D printer. It builds objects layer by layer from plastic. We use it to print prototypes and spare parts, for example parts for our robots.",
-   "text_de": "Das ist unser 3D-Drucker. Er baut Objekte Schicht f\u00fcr Schicht aus Kunststoff auf. Wir drucken damit Prototypen und Ersatzteile, zum Beispiel Teile f\u00fcr unsere Roboter."
+   "text_de": "Das ist unser 3D-Drucker. Er baut Objekte Schicht für Schicht aus Kunststoff auf. Wir drucken damit Prototypen und Ersatzteile, zum Beispiel Teile für unsere Roboter."
   }
  ]
 }

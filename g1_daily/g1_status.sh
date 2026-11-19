@@ -19,10 +19,12 @@ check "Voice bridge   :8766  (Piper voices loaded)" http://127.0.0.1:8766/health
 check "Camera bridge  :8770  (frames arriving)"     http://127.0.0.1:8770/status '"camera_connected": *true'
 check "Status bridge  :8767"                        http://127.0.0.1:8767/health '.'
 check "Teleop server  :8001  (robot FSM readable)"  http://127.0.0.1:8001/api/teleop/status '"fsm_id": *[0-9]'
+check "Vision service :8003  (describe / find)"     http://127.0.0.1:8003/api/vision/health '"ok"'
 check "Backend        :8000"                        http://127.0.0.1:8000/api/visitor-speech/status 'speech_bridge'
 check "Local AI (Ollama) :11434"                    http://127.0.0.1:11434/api/tags 'g1-assistant'
 echo
 FSM=$(curl -s -m 3 http://127.0.0.1:8001/api/teleop/status | grep -Eo '"fsm_id": *[0-9]+' | grep -Eo '[0-9]+$')
 echo "  Robot FSM: ${FSM:-unknown}   (500 = walking mode; Robot Show + joystick need 500)"
-echo "  App address: http://10.150.68.160  (backend 8000, joystick 8001, camera 8770)"
+IP=$(ip -4 -o addr show wlP1p1s0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+echo "  App address: http://${IP:-?}  (backend 8000, joystick 8001, camera 8770) - set it in the app's operator screen if it changed"
 echo

@@ -53,9 +53,10 @@ def http_json(method: str, url: str, body: dict | None = None, timeout: float = 
 # ----------------------------------------------------------------------
 
 class TeleopMotion:
-    def __init__(self, base: str, pin: str):
+    def __init__(self, base: str, pin: str, operator: str = "G1 guide"):
         self.base = base.rstrip("/")
         self.pin = pin
+        self.operator = operator
         self.token = None
         self.ws = None
         self._status: dict = {}
@@ -72,7 +73,7 @@ class TeleopMotion:
         from websockets.sync.client import connect
 
         res = http_json("POST", f"{self.base}/api/teleop/unlock",
-                        {"pin": self.pin, "operator": "G1 guide"})
+                        {"pin": self.pin, "operator": self.operator})
         self.token = res["token"]
         self._stop_count0 = res["status"].get("stop_count", 0)
         ws_url = self.base.replace("http://", "ws://") + f"/api/teleop/ws?token={self.token}"
@@ -94,6 +95,11 @@ class TeleopMotion:
             return
         self.ws.send(json.dumps({"type": "cmd", "x": float(x), "y": 0.0,
                                  "yaw": float(yaw), "scale": 1.0}))
+
+    def gesture(self, name: str) -> None:
+        """Arm gesture with the same lease (e.g. "high_wave")."""
+        if self.token:
+            http_json("POST", f"{self.base}/api/teleop/gesture", {"token": self.token, "gesture": name})
 
     def stopped_by_operator(self) -> bool:
         with self._lock:
@@ -238,6 +244,8 @@ def make_handler(service):
                 self._json(200, list_routes(service.routes_dir))
             elif path == "/api/guide/status":
                 self._json(200, service.runner.snapshot())
+            elif path == "/api/guide/pose":
+                self._json(200, service.pose())
             else:
                 self._json(404, {"detail": "Not found"})
 
@@ -261,11 +269,54 @@ def make_handler(service):
     return Handler
 
 
+RUNS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "runs", "runs.jsonl")
+
+
+def append_run(record: dict, path: str = RUNS_FILE) -> None:
+    """One JSON line per guide / tour run (read by G1 Studio -> Evaluation)."""
+    path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    new = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    if new:
+        try:
+            os.chmod(path, 0o666)
+            os.chmod(os.path.dirname(path), 0o777)
+        except OSError:
+            pass
+
+
 class GuideService:
     def __init__(self, runner: GuideRunner, routes_dir: str):
         self.runner = runner
         self.routes_dir = routes_dir
         self.thread: threading.Thread | None = None
+        if getattr(runner, "run_logger", None) is None:
+            runner.run_logger = append_run
+
+    def pose(self) -> dict:
+        """Live pose for G1 Studio. session = this FAST-LIO run (origin = HOME when
+        guide mode was started); aligned = teaching frame of the running route."""
+        r = self.runner
+        raw_sensors = getattr(r, "_raw_sensors", None) or r.sensors
+        out = {"session": None, "aligned": None, "route": None, "age_s": None,
+               "state": r.status.state}
+        try:
+            p = raw_sensors.pose()
+            if p is not None:
+                out["session"] = [round(p[1], 3), round(p[2], 3), round(p[4], 4)]
+                out["age_s"] = round(time.monotonic() - p[0], 2)
+            running = self.thread is not None and self.thread.is_alive()
+            if running and r.sensors is not raw_sensors:
+                a = r.sensors.pose()
+                if a is not None:
+                    out["aligned"] = [round(a[1], 3), round(a[2], 3), round(a[4], 4)]
+            if running:
+                out["route"] = r.status.route
+        except Exception as exc:
+            out["error"] = str(exc)
+        return out
 
     def start(self, body: dict) -> tuple[bool, str]:
         if self.thread is not None and self.thread.is_alive():
