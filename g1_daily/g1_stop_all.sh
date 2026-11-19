@@ -13,5 +13,6 @@ echo "Stopping voice, camera and status bridges..."
 docker exec "$CONTAINER" pkill -INT -f g1_voice_bridge.py 2>/dev/null
 docker exec "$CONTAINER" pkill -INT -f g1_camera_bridge.py 2>/dev/null
 docker exec "$CONTAINER" pkill -INT -f g1_status_bridge.py 2>/dev/null
+docker exec "$CONTAINER" pkill -INT -f vision_service.py 2>/dev/null
 sleep 1
 echo "Done. Docker containers are left running."

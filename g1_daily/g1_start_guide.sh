@@ -28,7 +28,11 @@ if running "fastlio_mapping"; then
   echo -e "  ${YEL}•${NC} already running - origin is where it was started."
   echo "     To reset HOME: put G1 on the tape, run g1_stop_guide.sh, then this script again."
 else
-  read -r -p "  Is G1 standing on the HOME tape, facing the marked direction? [y/N] " ok
+  if [ "${G1_ASSUME_HOME:-0}" = "1" ] || [ "${1:-}" = "--yes" ]; then
+    ok=y; echo "  G1 on HOME confirmed (G1 Studio / --yes)."
+  else
+    read -r -p "  Is G1 standing on the HOME tape, facing the marked direction? [y/N] " ok
+  fi
   if [ "${ok,,}" != "y" ]; then echo "  Put G1 on HOME first. Nothing started."; exit 1; fi
   docker exec -d "$CONTAINER" bash -lc "bash $TR/start_fastlio_live.sh > /tmp/g1_fastlio.log 2>&1"
   echo -e "  ${GREEN}✔${NC} started (log /tmp/g1_fastlio.log)"; sleep 8
@@ -38,7 +42,9 @@ echo; echo "=== 3/3  Guide service (port 8002) ==="
 if running "guide_service.py"; then
   echo -e "  ${YEL}•${NC} already running"
 elif [ -f "$PIN_FILE" ]; then
-  docker exec -d -e G1_TELEOP_PIN="$(cat "$PIN_FILE")" "$CONTAINER" \
+  # Optional tuning: export G1_GUIDE_OBSTACLE_HALF_WIDTH=0.15 before running this script.
+  docker exec -d -e G1_TELEOP_PIN="$(cat "$PIN_FILE")" \
+    -e G1_GUIDE_OBSTACLE_HALF_WIDTH="${G1_GUIDE_OBSTACLE_HALF_WIDTH:-}" "$CONTAINER" \
     bash -lc "$ROS && python3 -u $TR/guide_service.py > /tmp/g1_guide.log 2>&1"
   echo -e "  ${GREEN}✔${NC} started (log /tmp/g1_guide.log)"; sleep 4
 else

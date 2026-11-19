@@ -123,3 +123,39 @@ def test_yaw_from_quaternion_upright_and_inverted():
     cy, sy, cr, sr = cos(0.15), sin(0.15), cos(math.pi / 2), sin(math.pi / 2)
     qx, qy, qz, qw = sr * cy, sr * sy, cr * sy, cr * cy
     assert abs(yaw_from_quaternion(qx, qy, qz, qw) - 0.3) < 1e-6
+
+
+def _wall(x0, x1, y, z=-0.6):
+    return np.array([[x, y, z + dz] for x in np.arange(x0, x1, 0.02) for dz in (-0.3, 0.0, 0.3)])
+
+
+def test_path_corridor_ignores_walls_beside_the_route():
+    from route_core import obstacle_points_on_path
+    p = FollowParams()
+    path = np.array([[x, 0.0] for x in np.arange(0, 3, 0.05)])
+    lidar = (0.0, 0.0, 0.0)
+    assert obstacle_points_on_path(_wall(0.3, 1.5, 0.36), lidar, 0.0, path, p) == 0   # wall at 36 cm
+    person = np.array([[1.0, y, -0.6] for y in np.arange(-0.2, 0.2, 0.02)])
+    assert obstacle_points_on_path(person, lidar, 0.0, path, p) >= p.obstacle_min_points
+
+
+def test_path_corridor_follows_a_curve():
+    """Route turns right; a door frame straight ahead-left (old box: blocked) is ignored,
+    a person standing on the curved path is still seen."""
+    from route_core import obstacle_points_on_path
+    p = FollowParams()
+    path = np.array([[0.5 * math.sin(a), -0.5 + 0.5 * math.cos(a)] for a in np.linspace(0, math.pi / 2, 40)])
+    lidar = (0.0, 0.0, 0.0)
+    frame = np.array([[1.1, 0.27, -0.6 + dz] for dz in np.linspace(-0.4, 0.4, 20)])
+    assert obstacle_points_in_box(frame, lidar, 0.0, p) >= 0                 # (old check)
+    assert obstacle_points_on_path(frame, lidar, 0.0, path, p) == 0
+    person = np.array([[0.5 + dx, -0.6 + dy, -0.6 + dz] for dx in (0, .05) for dy in (0, .05)
+                       for dz in (-0.3, 0, 0.3)])
+    assert obstacle_points_on_path(person, lidar, 0.0, path, p) >= p.obstacle_min_points
+
+
+def test_path_ahead_is_dense_and_starts_at_robot():
+    f = Follower(l_route())
+    ahead = f.path_ahead(1.6)
+    assert np.allclose(ahead[0], f.xy[0])
+    assert np.max(np.linalg.norm(np.diff(ahead, axis=0), axis=1)) <= 0.051

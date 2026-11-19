@@ -17,7 +17,7 @@ TOKEN_FILE=~/.g1_bridge_token
 
 # Robot settings (change here if needed)
 MAX_FORWARD=0.25
-MAX_YAW=0.30
+MAX_YAW=0.8      # joystick turn speed (server max 0.8); the guide keeps its own tested 0.21-0.30 rad/s
 VOICE_EN=en_US-ryan-medium.onnx
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[0;33m'; NC='\033[0m'
@@ -32,12 +32,12 @@ running_in_container() {   # $1 = pattern
 }
 
 echo
-echo "=== 1/6  Docker containers ==="
+echo "=== 1/7  Docker containers ==="
 docker start g1-postgres "$CONTAINER" >/dev/null && ok "g1-postgres and $CONTAINER running" \
   || { bad "Docker containers could not start"; exit 1; }
 
 echo
-echo "=== 2/6  Voice bridge (Piper, port 8766) ==="
+echo "=== 2/7  Voice bridge (Piper, port 8766) ==="
 if running_in_container "g1_voice_bridge.py"; then
   info "already running - skipped"
 else
@@ -48,7 +48,7 @@ else
 fi
 
 echo
-echo "=== 3/6  Camera bridge (port 8770) ==="
+echo "=== 3/7  Camera bridge (port 8770) ==="
 if running_in_container "g1_camera_bridge.py"; then
   info "already running - skipped"
 else
@@ -58,7 +58,7 @@ else
 fi
 
 echo
-echo "=== 4/6  Status bridge (port 8767, read-only: no FSM flags) ==="
+echo "=== 4/7  Status bridge (port 8767, read-only: no FSM flags) ==="
 if running_in_container "g1_status_bridge.py"; then
   info "already running - skipped"
 elif [ -f "$TOKEN_FILE" ]; then
@@ -70,7 +70,7 @@ else
 fi
 
 echo
-echo "=== 5/6  Teleop / joystick / Robot Show server (port 8001) ==="
+echo "=== 5/7  Teleop / joystick / Robot Show server (port 8001) ==="
 if running_in_container "run_teleop_server.py"; then
   info "already running - skipped"
 elif [ -f "$PIN_FILE" ]; then
@@ -83,7 +83,19 @@ else
 fi
 
 echo
-echo "=== 6/6  G1 Studio backend (port 8000) ==="
+echo "=== 6/7  G1 Vision service (port 8003: describe scene / find object) ==="
+if running_in_container "vision_service.py"; then
+  info "already running - skipped"
+elif [ -f "$PIN_FILE" ]; then
+  docker exec -d -e G1_TELEOP_PIN="$(cat "$PIN_FILE")" "$CONTAINER" \
+    bash -lc "python3 -u /ros2_ws/src/g1pilot/hfu_vision/vision_service.py > /tmp/g1_vision.log 2>&1"
+  ok "started (log: docker exec $CONTAINER cat /tmp/g1_vision.log; model loads in the background)"
+else
+  bad "PIN file $PIN_FILE missing - vision service not started"
+fi
+
+echo
+echo "=== 7/7  G1 Studio backend (port 8000) ==="
 if pgrep -f "uvicorn app.main:app" >/dev/null; then
   info "already running - skipped"
 else
