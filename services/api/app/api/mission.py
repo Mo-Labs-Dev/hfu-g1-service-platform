@@ -138,3 +138,59 @@ async def run_action(action: str, body: ActionBody):
         raise HTTPException(400, str(exc))
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
+
+
+# ------------------------------------------------------------- G1 Vision
+class DescribeBody(BaseModel):
+    question: str = ""
+    lang: str = "en"
+
+
+class FindBody(PinBody):
+    object: str
+    lang: str = "en"
+
+
+def _vision_call(fn, *args):
+    try:
+        code, res = fn(*args)
+    except HubError as exc:
+        raise HTTPException(503, f"Vision service not running ({exc}). Start it with 'Start app services'.")
+    if code >= 400:
+        raise HTTPException(code, (res or {}).get("detail", f"Vision service HTTP {code}"))
+    return res
+
+
+@router.post("/vision/describe")
+async def vision_describe(body: DescribeBody):
+    return await run_in_threadpool(_vision_call, robot_hub.vision_describe, body.question, body.lang)
+
+
+@router.post("/vision/find")
+async def vision_find(body: FindBody):
+    try:
+        system_control.check_pin(body.pin)            # G1 turns on the spot
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    return await run_in_threadpool(_vision_call, robot_hub.vision_find, body.object, body.lang)
+
+
+@router.post("/vision/cancel")
+async def vision_cancel():
+    return await run_in_threadpool(_vision_call, robot_hub.vision_cancel)
+
+
+@router.get("/vision/status")
+async def vision_status():
+    try:
+        return await run_in_threadpool(robot_hub.vision_status)
+    except HubError as exc:
+        raise HTTPException(503, f"Vision service not running ({exc})")
+
+
+@router.get("/vision/objects")
+async def vision_objects():
+    try:
+        return await run_in_threadpool(robot_hub.vision_objects)
+    except HubError as exc:
+        raise HTTPException(503, f"Vision service not running ({exc})")

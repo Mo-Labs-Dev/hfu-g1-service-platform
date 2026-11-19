@@ -21,6 +21,10 @@ const navigation = [
     href: "/studio/simulation",
   },
   {
+    label: "Visitor App",
+    href: "/studio/app",
+  },
+  {
     label: "Evaluation",
     href: "/studio/evaluation",
   },

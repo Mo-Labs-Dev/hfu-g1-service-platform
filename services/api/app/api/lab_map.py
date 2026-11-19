@@ -116,22 +116,33 @@ def _edit_errors(fn):
         raise HTTPException(400, str(exc))
 
 
+async def _changed(route: str):
+    from app.api.app_config import notify_routes_changed
+    await notify_routes_changed(route)                 # tablets reload titles live
+
+
 @router.put("/routes/{route}")
 async def edit_route(route: str, body: RouteEdit):
     _pin(body.pin)
-    return _edit_errors(lambda: lab_map.update_route(route, body.model_dump(exclude={"pin"})))
+    res = _edit_errors(lambda: lab_map.update_route(route, body.model_dump(exclude={"pin"})))
+    await _changed(route)
+    return res
 
 
 @router.put("/routes/{route}/stops/{stop}")
 async def edit_stop(route: str, stop: str, body: StopEdit):
     _pin(body.pin)
-    return _edit_errors(lambda: lab_map.update_stop(route, stop, body.model_dump(exclude={"pin"})))
+    res = _edit_errors(lambda: lab_map.update_stop(route, stop, body.model_dump(exclude={"pin"})))
+    await _changed(route)
+    return res
 
 
 @router.delete("/routes/{route}/stops/{stop}")
 async def delete_stop(route: str, stop: str, pin: str = ""):
     _pin(pin)
-    return _edit_errors(lambda: lab_map.delete_stop(route, stop))
+    res = _edit_errors(lambda: lab_map.delete_stop(route, stop))
+    await _changed(route)
+    return res
 
 
 @router.post("/translate")

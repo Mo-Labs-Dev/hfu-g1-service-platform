@@ -15,6 +15,7 @@ import {
   postJson,
 } from "@/lib/g1api";
 import { usePin } from "@/components/studio/usePin";
+import VisionPanel from "@/components/studio/VisionPanel";
 
 type Detection = {
   label: string;
@@ -538,6 +539,11 @@ export default function MissionControlPage() {
             ))}
             {!overview && <li className="text-[13px] text-[#657078]">Loading…</li>}
           </ul>
+        </Card>
+
+        {/* ---------------- G1 vision ---------------- */}
+        <Card title="G1 Vision" className="xl:col-span-3">
+          <VisionPanel withPin={withPin} lang={lang} />
         </Card>
 
         {/* ---------------- system actions ---------------- */}

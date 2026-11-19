@@ -15,6 +15,7 @@ from app.api.mission import router as mission_router
 from app.api.lab_map import router as lab_map_router
 from app.api.runs import router as runs_router
 from app.api.sim import router as sim_router
+from app.api.app_config import router as app_config_router
 from app.api.websocket import manager, router as websocket_router
 from app.api.visitor_safety import router as visitor_safety_router
 from app.api.visitor_welcome import router as visitor_welcome_router
@@ -136,6 +137,7 @@ app.include_router(mission_router)
 app.include_router(lab_map_router)
 app.include_router(runs_router)
 app.include_router(sim_router)
+app.include_router(app_config_router)
 
 
 @app.get("/api/health")

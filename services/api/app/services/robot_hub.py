@@ -198,3 +198,24 @@ def guide_pose():
 
 def camera_snapshot() -> tuple[bytes, str]:
     return get_bytes(f"{CAMERA}/snapshot", timeout=3)
+
+
+# ---------------------------------------------------------------- G1 Vision (port 8003)
+def vision_describe(question: str, lang: str) -> tuple[int, object]:
+    return post_json(f"{VISION}/api/vision/describe", {"question": question, "lang": lang}, timeout=150)
+
+
+def vision_find(obj: str, lang: str) -> tuple[int, object]:
+    return post_json(f"{VISION}/api/vision/find", {"object": obj, "lang": lang}, timeout=5)
+
+
+def vision_status():
+    return get_json(f"{VISION}/api/vision/status", timeout=2)
+
+
+def vision_cancel() -> tuple[int, object]:
+    return post_json(f"{VISION}/api/vision/cancel", {}, timeout=3)
+
+
+def vision_objects():
+    return get_json(f"{VISION}/api/vision/objects", timeout=2)
