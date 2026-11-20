@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.services import content_service, robot_hub
 from app.services.lab_map_service import lab_map
 from app.services.cloud3d_service import cloud3d
+from app.services import destinations_service as dest
 from app.services.robot_hub import HubError
 from app.services.system_control import system_control
 
@@ -106,11 +107,61 @@ async def align(route: str, body: PinBody):
 
 @router.get("/live")
 async def live():
+    """G1 on the map. Best source: the map localizer (LiDAR matched to the map, works
+    anywhere). Fallback: guide pose via HOME / route alignment."""
+    gp = None
     try:
         gp = await run_in_threadpool(robot_hub.guide_pose)
     except HubError:
-        return {"pose": None, "detail": "Guide mode not running"}
-    return {"pose": lab_map.live_pose(gp), "raw": gp}
+        pass
+    try:
+        lp = await run_in_threadpool(robot_hub.loc_pose)
+    except HubError:
+        lp = None
+    return lab_map.combine_live(gp, lp)
+
+
+class LocInit(BaseModel):
+    pin: str = ""
+    x: float | None = None
+    y: float | None = None
+    yaw: float | None = None
+    home: bool = False
+
+
+@router.get("/loc")
+async def loc_status():
+    try:
+        return await run_in_threadpool(robot_hub.loc_status)
+    except HubError as exc:
+        raise HTTPException(503, f"Map localizer not running ({exc})")
+
+
+@router.post("/loc/init")
+async def loc_init(body: LocInit):
+    _pin(body.pin)
+    payload = {"home": True} if body.home else {"x": body.x, "y": body.y, "yaw": body.yaw}
+    if not body.home and None in (body.x, body.y, body.yaw):
+        raise HTTPException(400, "x, y and yaw are needed (or home: true)")
+    try:
+        code, data = await run_in_threadpool(robot_hub.loc_init, payload)
+    except HubError as exc:
+        raise HTTPException(503, f"Map localizer not running ({exc})")
+    if code >= 400:
+        raise HTTPException(code if code < 600 else 502, (data or {}).get("detail", "localizer error"))
+    return data
+
+
+@router.post("/loc/relocalize")
+async def loc_relocalize(body: PinBody):
+    _pin(body.pin)
+    try:
+        code, data = await run_in_threadpool(robot_hub.loc_relocalize)
+    except HubError as exc:
+        raise HTTPException(503, f"Map localizer not running ({exc})")
+    if code >= 400:
+        raise HTTPException(code if code < 600 else 502, (data or {}).get("detail", "localizer error"))
+    return data
 
 
 # ------------------------------------------------------------------ tour editor
@@ -203,3 +254,107 @@ async def say(body: SayBody):
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(503, f"Voice bridge not available: {exc}")
+
+
+# ------------------------------------------------------------------ autonomous walking
+class DestinationBody(BaseModel):
+    pin: str = ""
+    name: str | None = None
+    title_en: str = ""
+    title_de: str = ""
+    arrival_en: str = ""
+    arrival_de: str = ""
+    x: float
+    y: float
+    yaw: float | None = None
+
+
+class GotoBody(BaseModel):
+    pin: str = ""
+    destination: str | None = None     # named destination (visitors, no PIN)
+    x: float | None = None             # any point (operator, PIN)
+    y: float | None = None
+    yaw: float | None = None
+    lang: str = "en"
+    return_home: bool = False
+
+
+class PlanBody(BaseModel):
+    x: float
+    y: float
+
+
+@router.get("/destinations")
+async def destinations():
+    return dest.list_all()
+
+
+@router.post("/destinations")
+async def save_destination(body: DestinationBody):
+    _pin(body.pin)
+    item = _edit_errors(lambda: dest.upsert(body.model_dump(exclude={"pin"})))
+    await _changed("destinations")
+    return item
+
+
+@router.delete("/destinations/{name}")
+async def delete_destination(name: str, pin: str = ""):
+    _pin(pin)
+    _edit_errors(lambda: dest.delete(name))
+    await _changed("destinations")
+    return {"ok": True}
+
+
+@router.get("/guide")
+async def guide_status():
+    """Running guide / autonomous walk (incl. the planned path) for the Lab Map."""
+    try:
+        return await run_in_threadpool(robot_hub.guide_status)
+    except HubError:
+        return {"state": "offline"}
+
+
+@router.get("/nav")
+async def nav_info():
+    try:
+        return await run_in_threadpool(robot_hub.guide_nav)
+    except HubError as exc:
+        return {"available": False, "reason": f"Guide mode not running ({exc})"}
+
+
+@router.post("/plan")
+async def plan(body: PlanBody):
+    try:
+        code, data = await run_in_threadpool(robot_hub.guide_plan, body.x, body.y)
+    except HubError as exc:
+        raise HTTPException(503, f"Guide mode not running ({exc})")
+    if code >= 400:
+        raise HTTPException(code if code < 600 else 502, (data or {}).get("detail", "planning failed"))
+    return data
+
+
+@router.post("/goto")
+async def goto(body: GotoBody):
+    if body.destination:
+        try:
+            d = dest.get(body.destination)
+        except KeyError:
+            raise HTTPException(404, f"Unknown destination '{body.destination}'")
+        payload = {k: d.get(k) for k in ("x", "y", "yaw", "name", "title_en", "title_de", "arrival_en", "arrival_de")}
+    else:
+        _pin(body.pin)                     # any point on the map: operators only
+        if body.x is None or body.y is None:
+            raise HTTPException(400, "destination or x/y needed")
+        payload = {"x": body.x, "y": body.y, "yaw": body.yaw, "name": "map_point",
+                   "title_en": "this spot", "title_de": "diesem Punkt"}
+    payload["lang"] = body.lang if body.lang in ("en", "de") else "en"
+    home = lab_map.alignment().get("home")
+    if body.return_home and home:
+        payload.update({"return_home": True, "home": home})
+    try:
+        code, data = await run_in_threadpool(robot_hub.guide_goto, payload)
+    except HubError as exc:
+        raise HTTPException(503, f"Guide mode not running ({exc})")
+    if code >= 400:
+        raise HTTPException(409 if code == 409 else 502, (data or {}).get("detail", "could not start"))
+    return data

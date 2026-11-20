@@ -363,6 +363,20 @@ class LabMap:
                 "age_s": guide_pose.get("age_s"), "route": route, "state": guide_pose.get("state")}
 
 
+    def combine_live(self, gp: dict | None, lp: dict | None) -> dict:
+        """Best G1 pose for the map: the map localizer (LiDAR matched to the map, works
+        anywhere) when its quality is good/weak; otherwise the guide pose via HOME/route."""
+        if lp and lp.get("map") and lp.get("quality") in ("good", "weak"):
+            x, y, yaw = lp["map"]
+            return {"pose": {"x": x, "y": y, "yaw": yaw, "source": "lidar_localizer",
+                             "quality": lp["quality"], "age_s": lp.get("age_s"),
+                             "route": (gp or {}).get("route"), "state": (gp or {}).get("state")},
+                    "localizer": lp, "raw": gp}
+        if gp is None:
+            return {"pose": None, "detail": "Guide mode not running", "localizer": lp}
+        return {"pose": self.live_pose(gp), "raw": gp, "localizer": lp}
+
+
 def read_pgm(path: str) -> np.ndarray:
     with open(path, "rb") as f:
         data = f.read()
