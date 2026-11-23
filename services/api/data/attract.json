@@ -1,0 +1,13 @@
+{
+ "enabled": false,
+ "cooldown_s": 60,
+ "min_box_height": 0.25,
+ "frames_needed": 2,
+ "wave": true,
+ "text_en": "Hello! I'm G1. Would you like a lab tour? Just tap Start on the tablet.",
+ "text_de": "Hallo! Ich bin G1. Möchten Sie eine Laborführung? Tippen Sie einfach auf Start am Tablet.",
+ "languages": [
+  "en",
+  "de"
+ ]
+}

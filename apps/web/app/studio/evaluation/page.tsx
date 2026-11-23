@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiBase, getJson, sendJson } from "@/lib/g1api";
 import { usePin } from "@/components/studio/usePin";
 import FeedbackSection from "@/components/studio/FeedbackSection";
+import EvaluationOverview from "@/components/studio/EvaluationOverview";
 
 type Run = {
   id: string;
@@ -184,6 +185,10 @@ export default function EvaluationPage() {
 
       <div className="mx-auto max-w-[1600px] space-y-6 px-6 py-6 md:px-10">
         {error && <p className="rounded bg-[#fdecec] p-3 text-[13px] font-semibold text-[#b42020]">{error}</p>}
+
+        <EvaluationOverview />
+
+        <h2 className="pt-2 text-[13px] font-bold uppercase tracking-[0.08em] text-[#36414b]">Guide &amp; tour runs (taught routes + autonomous goto)</h2>
 
         {/* KPI tiles */}
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">

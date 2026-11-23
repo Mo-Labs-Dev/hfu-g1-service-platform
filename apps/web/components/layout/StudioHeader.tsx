@@ -17,6 +17,14 @@ const navigation = [
     href: "/studio/lab-map",
   },
   {
+    label: "Show Mode",
+    href: "/studio/show",
+  },
+  {
+    label: "Live View",
+    href: "/studio/live",
+  },
+  {
     label: "Simulation",
     href: "/studio/simulation",
   },
@@ -33,44 +41,12 @@ const navigation = [
     href: "/studio/safety",
   },
   {
-    label: "Workflows",
-    href: "/studio/workflows",
-  },
-  {
-    label: "Locations",
-    href: "/studio/locations",
-  },
-  {
-    label: "Vision",
-    href: "/studio/vision",
-  },
-  {
-    label: "LiDAR",
-    href: "/studio/lidar",
-  },
-  {
-    label: "Robot Map",
-    href: "/studio/robot-map",
-  },
-  {
-  label: "Navigation",
-  href: "/studio/navigation",
-  },
-  {
     label: "Interaction",
     href: "/studio/interaction",
   },
   {
-    label: "Robot Control",
-    href: "/studio/control",
-  },
-  {
-    label: "Task History",
-    href: "/studio/history",
-  },
-  {
-    label: "Settings",
-    href: "/studio/settings",
+    label: "Vision",
+    href: "/studio/vision",
   },
 ];
 

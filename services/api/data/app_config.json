@@ -1,10 +1,10 @@
 {
- "version": 7,
- "updated": "2026-11-19T11:36:57",
+ "version": 17,
+ "updated": "2026-11-20T16:07:39",
  "announcement": {
-  "active": true,
+  "active": false,
   "level": "info",
-  "text_en": "Today is Monday",
+  "text_en": "Testing in Progress!",
   "text_de": ""
  },
  "tiles": {
@@ -12,7 +12,7 @@
   "demonstrations": true,
   "lab_map": true,
   "lab_info": true,
-  "safety": true,
+  "safety": false,
   "robot_show": true
  }
 }

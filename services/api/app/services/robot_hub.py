@@ -30,6 +30,7 @@ STATUS_BRIDGE = _url("G1_STATUS_BRIDGE_URL", 8767)
 CAMERA = _url("G1_CAMERA_URL", 8770)
 TELEMETRY = _url("G1_TELEMETRY_URL", 8004)
 LOCALIZER = _url("G1_LOCALIZER_URL", 8006)
+PICK = _url("G1_PICK_URL", 8005)
 OLLAMA = _url("G1_OLLAMA_URL", 11434)
 
 
@@ -127,6 +128,10 @@ def _localizer(d):
     return q in ("good", "weak"), f"{q} · fit {d.get('fitness', 0):.2f}" if d else "no data"
 
 
+def _pick(d):
+    return True, (d or {}).get("state", "?")
+
+
 def _ollama(d):
     models = [m.get("name") for m in (d or {}).get("models", [])]
     return bool(models), ", ".join(models[:4]) if models else "no models"
@@ -142,6 +147,7 @@ SERVICES = [
     ("vision", "Vision service", 8003, f"{VISION}/api/vision/status", _vision, False),
     ("telemetry", "Telemetry (battery, motors)", 8004, f"{TELEMETRY}/api/telemetry", _telemetry, False),
     ("localizer", "Map localizer (G1 on the map)", 8006, f"{LOCALIZER}/api/loc/pose", _localizer, False),
+    ("pick", "Point-at-it arm demo", 8005, f"{PICK}/api/pick/status", _pick, False),
 ]
 
 _pool = ThreadPoolExecutor(max_workers=8)
@@ -239,6 +245,27 @@ def loc_init(body: dict) -> tuple[int, object]:
 
 def loc_relocalize() -> tuple[int, object]:
     return post_json(f"{LOCALIZER}/api/loc/relocalize", {}, timeout=30)
+
+
+# ---------------------------------------------------------------- point-at-it demo (port 8005)
+def pick_status():
+    return get_json(f"{PICK}/api/pick/status", timeout=1.5)
+
+
+def pick_scene():
+    return get_json(f"{PICK}/api/pick/scene", timeout=6)
+
+
+def pick_view() -> tuple[bytes, str]:
+    return get_bytes(f"{PICK}/api/pick/view.jpg", timeout=3)
+
+
+def pick_point(target: str, lang: str) -> tuple[int, object]:
+    return post_json(f"{PICK}/api/pick/point", {"target": target, "lang": lang}, timeout=5)
+
+
+def pick_stop() -> tuple[int, object]:
+    return post_json(f"{PICK}/api/pick/stop", {}, timeout=3)
 
 
 def camera_snapshot() -> tuple[bytes, str]:

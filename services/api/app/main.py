@@ -20,6 +20,12 @@ from app.api.dashboard import router as dashboard_router
 from app.api.feedback import router as feedback_router
 from app.api.safety import router as safety_router
 from app.api.attract import router as attract_router
+from app.api.pick import router as pick_router
+from app.api.task import router as task_router
+from app.api.voice import router as voice_router
+from app.api.interaction_control import router as interaction_control_router
+from app.api.interaction_control import cards_router as talk_cards_router
+from app.api.studio_plus import router as studio_plus_router
 from app.api.websocket import manager, router as websocket_router
 from app.api.visitor_safety import router as visitor_safety_router
 from app.api.visitor_welcome import router as visitor_welcome_router
@@ -88,6 +94,26 @@ async def lifespan(app: FastAPI):
     # Attract mode (off by default, switched on in Studio -> Visitor App)
     from app.services import attract_service
     attract_task = asyncio.create_task(attract_service.run_forever())
+    # "Hey G1": G1's own microphone, always on (G1_VOICE_LISTENER=0 to switch off)
+    from app.services import voice_listener
+    voice_listener.start(asyncio.get_running_loop())
+    # Studio -> Interaction page: live log of every conversation turn (app, G1 mic, Studio)
+    from app.services import interaction_control
+    _loop = asyncio.get_running_loop()
+
+    def _push(ev):
+        try:
+            asyncio.run_coroutine_threadsafe(manager.broadcast(ev), _loop)
+        except Exception:
+            pass
+    interaction_control.broadcaster = _push
+    from app.services import talk_cards_service
+    talk_cards_service.broadcaster = _push
+    # Show mode runner + live activity feed / walk recorder (Studio -> Show mode, Live view)
+    from app.services import activity_service, show_service
+    activity_service.broadcaster = _push
+    show_service.get_runner(_loop, _push)
+    activity_task = asyncio.create_task(activity_service.run_forever())
 
     print("[G1 Platform] Backend started")
     if AUTO_WELCOME:
@@ -104,6 +130,10 @@ async def lifespan(app: FastAPI):
     finally:
         battery_task.cancel()
         attract_task.cancel()
+        activity_task.cancel()
+        if show_service.runner is not None:
+            show_service.runner.stop()
+        voice_listener.stop()
         await guidance_service.shutdown()
         if AUTO_WELCOME:
             await visitor_speech_service.stop()
@@ -156,6 +186,12 @@ app.include_router(dashboard_router)
 app.include_router(feedback_router)
 app.include_router(safety_router)
 app.include_router(attract_router)
+app.include_router(pick_router)
+app.include_router(task_router)
+app.include_router(voice_router)
+app.include_router(interaction_control_router)
+app.include_router(talk_cards_router)
+app.include_router(studio_plus_router)
 
 
 @app.get("/api/health")

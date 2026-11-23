@@ -1,0 +1,35 @@
+[
+ {
+  "name": "test_2",
+  "x": -0.217,
+  "y": -10.631,
+  "yaw": 1.6447,
+  "title_en": "test 2",
+  "title_de": "test 2",
+  "arrival_en": "",
+  "arrival_de": "",
+  "created": "2026-11-20 15:35:54"
+ },
+ {
+  "name": "test1",
+  "x": 0.12,
+  "y": -7.379,
+  "yaw": 1.3615,
+  "title_en": "Test1",
+  "title_de": "Test1",
+  "arrival_en": "",
+  "arrival_de": "",
+  "created": "2026-11-20 15:35:20"
+ },
+ {
+  "name": "test3",
+  "x": -0.003,
+  "y": -9.024,
+  "yaw": 1.6113,
+  "title_en": "test3",
+  "title_de": "test3",
+  "arrival_en": "",
+  "arrival_de": "",
+  "created": "2026-11-20 15:36:36"
+ }
+]

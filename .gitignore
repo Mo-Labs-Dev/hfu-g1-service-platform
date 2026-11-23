@@ -34,3 +34,11 @@ out/
 *.onnx.json
 # local databases (visitor data)
 services/api/data/*.db
+
+# runtime data (visitor conversations, recordings, run logs)
+services/api/data/interaction_log.jsonl
+services/api/data/interaction_settings.json
+services/api/data/show_runs.jsonl
+services/api/data/trajectories/
+services/api/app/data/knowledge_base.json.bak
+services/api/app/data/knowledge_base.json.tmp

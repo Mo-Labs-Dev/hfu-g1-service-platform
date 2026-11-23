@@ -27,6 +27,8 @@ class AskRequest(BaseModel):
     # Language chosen in the app ("en" / "de"); None = follow the visitor.
     language: Literal["en", "de"] | None = None
     session_id: str | None = Field(default=None, min_length=36, max_length=36)
+    # "app" = G1 Remote (default, old apps send nothing), "studio" = Studio Interaction page test
+    source: Literal["app", "studio"] = "app"
 
 
 class AskResponse(BaseModel):
@@ -60,6 +62,7 @@ async def ask_g1(request: AskRequest):
             speak=request.speak,
             session_id=request.session_id,
             language=request.language,
+            source=request.source,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

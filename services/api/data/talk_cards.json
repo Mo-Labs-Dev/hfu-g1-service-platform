@@ -1,0 +1,486 @@
+{
+ "version": 2,
+ "updated": "2026-11-23T15:32:30",
+ "cards": [
+  {
+   "id": "who",
+   "category": "About G1",
+   "en": "Who are you?",
+   "de": "Wer bist du?",
+   "answer_en": "I'm G1, a humanoid robot made by Unitree. Here at Furtwangen University I welcome visitors, guide them through the lab and show what robots can do.",
+   "answer_de": "Ich bin G1, ein humanoider Roboter von Unitree. Hier an der Hochschule Furtwangen begrüße ich Besucher, führe sie durch das Labor und zeige, was Roboter können.",
+   "enabled": true,
+   "builtin": true
+  },
+  {
+   "id": "what_can",
+   "category": "About G1",
+   "en": "What can you do?",
+   "de": "Was kannst du?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "how_heavy",
+   "category": "About G1",
+   "en": "How heavy are you?",
+   "de": "Wie schwer bist du?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "battery",
+   "category": "About G1",
+   "en": "How long does your battery last?",
+   "de": "Wie lange hält dein Akku?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "sensors",
+   "category": "About G1",
+   "en": "How do you see the world?",
+   "de": "Wie siehst du die Welt?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "lidar",
+   "category": "About G1",
+   "en": "What is a LiDAR?",
+   "de": "Was ist ein LiDAR?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "brain",
+   "category": "About G1",
+   "en": "What computer is your brain?",
+   "de": "Welcher Computer ist dein Gehirn?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "ai",
+   "category": "About G1",
+   "en": "How do you understand me?",
+   "de": "Wie verstehst du mich?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "languages",
+   "category": "About G1",
+   "en": "Which languages do you speak?",
+   "de": "Welche Sprachen sprichst du?",
+   "answer_en": "I speak English and German. Just talk to me in the language you like.",
+   "answer_de": "Ich spreche Deutsch und Englisch. Sprechen Sie einfach in Ihrer Sprache mit mir.",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "feel",
+   "category": "About G1",
+   "en": "Do you have feelings?",
+   "de": "Hast du Gefühle?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "learn",
+   "category": "About G1",
+   "en": "Can you learn new things?",
+   "de": "Kannst du Neues lernen?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "walk_how",
+   "category": "About G1",
+   "en": "How do you keep your balance?",
+   "de": "Wie hältst du das Gleichgewicht?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "lab",
+   "category": "Lab & HFU",
+   "en": "What do you do in this lab?",
+   "de": "Was macht ihr in diesem Labor?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "hfu",
+   "category": "Lab & HFU",
+   "en": "What is Furtwangen University?",
+   "de": "Was ist die Hochschule Furtwangen?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "ipse",
+   "category": "Lab & HFU",
+   "en": "What is IPSE?",
+   "de": "Was ist das IPSE?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "thesis",
+   "category": "Lab & HFU",
+   "en": "What is your thesis project about?",
+   "de": "Worum geht es in deinem Masterprojekt?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "study",
+   "category": "Lab & HFU",
+   "en": "Can I study robotics here?",
+   "de": "Kann ich hier Robotik studieren?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "machines",
+   "category": "Lab & HFU",
+   "en": "Which machines are in this lab?",
+   "de": "Welche Maschinen gibt es hier?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "printer",
+   "category": "Lab & HFU",
+   "en": "What is the 3D printer used for?",
+   "de": "Wofür wird der 3D-Drucker benutzt?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "other_robots",
+   "category": "Lab & HFU",
+   "en": "Which other robots are here?",
+   "de": "Welche anderen Roboter gibt es hier?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "wave",
+   "category": "Demos",
+   "en": "Can you wave?",
+   "de": "Kannst du winken?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": true,
+   "builtin": true
+  },
+  {
+   "id": "hand",
+   "category": "Demos",
+   "en": "Shake my hand",
+   "de": "Gib mir die Hand",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": true,
+   "builtin": true
+  },
+  {
+   "id": "see",
+   "category": "Demos",
+   "en": "What do you see?",
+   "de": "Was siehst du?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": true,
+   "builtin": true
+  },
+  {
+   "id": "point",
+   "category": "Demos",
+   "en": "Show me the pick and place demo",
+   "de": "Zeig mir die Greif-Demo",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "humanoid",
+   "category": "Robotics",
+   "en": "What is a humanoid robot?",
+   "de": "Was ist ein humanoider Roboter?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "why_legs",
+   "category": "Robotics",
+   "en": "Why do robots need legs?",
+   "de": "Warum brauchen Roboter Beine?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "slam",
+   "category": "Robotics",
+   "en": "How do you find your way?",
+   "de": "Wie findest du deinen Weg?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "future",
+   "category": "Robotics",
+   "en": "Will robots work in our homes?",
+   "de": "Werden Roboter bei uns zu Hause arbeiten?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "jobs",
+   "category": "Robotics",
+   "en": "Will robots take our jobs?",
+   "de": "Nehmen Roboter uns die Arbeit weg?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "cobot",
+   "category": "Robotics",
+   "en": "What is a collaborative robot?",
+   "de": "Was ist ein kollaborativer Roboter?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "industry",
+   "category": "Robotics",
+   "en": "Where are robots used in industry?",
+   "de": "Wo werden Roboter in der Industrie eingesetzt?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "joke",
+   "category": "Fun",
+   "en": "Tell me a joke",
+   "de": "Erzähl mir einen Witz",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "dance",
+   "category": "Fun",
+   "en": "Can you dance?",
+   "de": "Kannst du tanzen?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "food",
+   "category": "Fun",
+   "en": "What is your favourite food?",
+   "de": "Was isst du am liebsten?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "age",
+   "category": "Fun",
+   "en": "How old are you?",
+   "de": "Wie alt bist du?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "friend",
+   "category": "Fun",
+   "en": "Do you have friends?",
+   "de": "Hast du Freunde?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "dream",
+   "category": "Fun",
+   "en": "What do you dream about?",
+   "de": "Wovon träumst du?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "fact",
+   "category": "Fun",
+   "en": "Tell me a fun robot fact",
+   "de": "Erzähl mir etwas Lustiges über Roboter",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "hello",
+   "category": "Visit",
+   "en": "Hello G1!",
+   "de": "Hallo G1!",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "first_time",
+   "category": "Visit",
+   "en": "It's my first time here",
+   "de": "Ich bin zum ersten Mal hier",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "contact",
+   "category": "Visit",
+   "en": "Who can I talk to in the lab?",
+   "de": "Mit wem kann ich im Labor sprechen?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "bye",
+   "category": "Visit",
+   "en": "Goodbye G1",
+   "de": "Tschüss G1",
+   "answer_en": "Goodbye, it was nice talking to you. Enjoy the rest of your visit!",
+   "answer_de": "Auf Wiedersehen, es war schön, mit Ihnen zu sprechen. Genießen Sie den restlichen Besuch!",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "name",
+   "category": "About G1",
+   "en": "What is your name?",
+   "de": "Wie heißt du?",
+   "answer_en": "My name is G1.",
+   "answer_de": "Ich heiße G1.",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "maker",
+   "category": "About G1",
+   "en": "Who built you?",
+   "de": "Wer hat dich gebaut?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "how_tall",
+   "category": "About G1",
+   "en": "How tall are you?",
+   "de": "Wie groß bist du?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": false,
+   "builtin": true
+  },
+  {
+   "id": "bottle",
+   "category": "Demos",
+   "en": "Find a bottle",
+   "de": "Finde eine Flasche",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": true,
+   "builtin": true
+  },
+  {
+   "id": "tour",
+   "category": "Demos",
+   "en": "Give me a lab tour",
+   "de": "Zeig mir das Labor",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": true,
+   "builtin": true
+  },
+  {
+   "id": "safety",
+   "category": "Lab & HFU",
+   "en": "What are the safety rules here?",
+   "de": "Welche Sicherheitsregeln gelten hier?",
+   "answer_en": "",
+   "answer_de": "",
+   "enabled": true,
+   "builtin": true
+  }
+ ]
+}
